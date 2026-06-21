@@ -80,23 +80,51 @@ function filtered() {
   });
 }
 
-function renderGallery() {
-  const list = filtered();
-  $('#resultCount').textContent = `${list.length} cards`;
-  const g = $('#gallery');
-  g.innerHTML = '';
+/* gallery renders in batches and grows as you scroll (no 600-card cap) */
+const GAL_BATCH = 120;
+let galList = [], galShown = 0, galIO = null;
+
+function cardNode(c) {
+  const qty = deck.cards.get(c.id) || 0;
+  const card = el('div', 'card' + (qty ? ' has' : ''));
+  card.dataset.id = c.id;
+  card.innerHTML =
+    `<img loading="lazy" src="${IMG(c.id)}" alt="${escapeAttr(c.name)}" onerror="this.style.opacity=.15">` +
+    `<span class="qty">${qty}</span><span class="nm">${escapeHtml(c.name || '#' + c.id)}</span>`;
+  return card;
+}
+
+function galAppend() {
+  const g = $('#gallery'), sentinel = $('#galMore');
+  const end = Math.min(galShown + GAL_BATCH, galList.length);
   const frag = document.createDocumentFragment();
-  for (const c of list.slice(0, 600)) {
-    const qty = deck.cards.get(c.id) || 0;
-    const card = el('div', 'card' + (qty ? ' has' : ''));
-    card.dataset.id = c.id;
-    card.innerHTML =
-      `<img loading="lazy" src="${IMG(c.id)}" alt="${escapeAttr(c.name)}" onerror="this.style.opacity=.15">` +
-      `<span class="qty">${qty}</span><span class="nm">${escapeHtml(c.name || '#' + c.id)}</span>`;
-    frag.append(card);
+  for (let i = galShown; i < end; i++) frag.append(cardNode(galList[i]));
+  g.insertBefore(frag, sentinel);
+  galShown = end;
+  if (galShown >= galList.length) {
+    sentinel.textContent = galList.length ? '' : 'No cards match.';
+    galIO.disconnect();
+  } else {
+    sentinel.textContent = `${galShown} of ${galList.length}…`;
   }
-  g.append(frag);
-  if (list.length > 600) g.append(el('div', 'resultCount', `… ${list.length - 600} more — refine filters`));
+}
+
+function renderGallery() {
+  galList = filtered();
+  $('#resultCount').textContent = `${galList.length} cards`;
+  const g = $('#gallery');
+  if (galIO) galIO.disconnect();
+  g.innerHTML = '';
+  galShown = 0;
+  const sentinel = el('div', 'galmore'); sentinel.id = 'galMore';
+  g.append(sentinel);
+  galAppend();                                  // first batch
+  galIO = new IntersectionObserver(
+    es => { if (es.some(e => e.isIntersecting)) galAppend(); },
+    { root: g, rootMargin: '800px' }            // prefetch before the sentinel is reached
+  );
+  galIO.observe(sentinel);
+  g.scrollTop = 0;
 }
 
 $('#gallery').addEventListener('click', e => {
@@ -337,9 +365,12 @@ function switchView(v) {
   $$('.view').forEach(x => x.classList.add('hidden'));
   $('#view-' + v).classList.remove('hidden');
   $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === v));
+  $('#deckToggle').classList.toggle('hidden', v !== 'builder');   // drawer toggle only in builder
+  if (v !== 'builder') $('.deckpanel').classList.remove('open');
   location.hash = v;
 }
 $$('.tab').forEach(t => t.onclick = () => switchView(t.dataset.view));
+$('#deckToggle').onclick = () => $('.deckpanel').classList.toggle('open');
 function routeFromHash() { switchView(location.hash.replace('#', '') === 'play' ? 'play' : 'builder'); }
 
 /* =========================================================
