@@ -1,32 +1,24 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Card PDF Builder</title>
-    <link rel="stylesheet" href="styles.css" />
-    <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js" defer></script>
-    <script src="script.js" defer></script>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="A home for Daniel Vibar's web projects." />
+    <title>Project Shelf</title>
+    <style>
+      :root { --ink:#152321; --paper:#f7f4ec; --line:#cfccbe; --coral:#e8573f; --lime:#c8e359; --muted:#60716d; }
+      * { box-sizing:border-box; } body { margin:0; color:var(--ink); background:var(--paper); font-family:Georgia, 'Times New Roman', serif; } main { max-width:1100px; margin:auto; padding:27px 30px 68px; } header { display:flex; justify-content:space-between; align-items:center; padding-bottom:27px; border-bottom:1px solid var(--ink); font:600 14px/1.1 system-ui,sans-serif; letter-spacing:.02em; } .mark { display:flex; gap:10px; align-items:center; } .mark i { width:18px; height:18px; border-radius:50%; background:var(--coral); display:block; } .count { color:var(--muted); } .intro { max-width:740px; padding:90px 0 70px; } h1 { margin:0; font-size:clamp(3.3rem,8vw,7rem); line-height:.87; letter-spacing:-.075em; font-weight:400; } .intro p { margin:25px 0 0; max-width:510px; color:var(--muted); font:17px/1.55 system-ui,sans-serif; } .grid { display:grid; grid-template-columns:repeat(2,1fr); border-top:1px solid var(--ink); border-left:1px solid var(--ink); } .project { min-height:280px; padding:27px; text-decoration:none; color:var(--ink); border-right:1px solid var(--ink); border-bottom:1px solid var(--ink); display:flex; flex-direction:column; justify-content:space-between; transition:background .18s, color .18s; } .project:hover { background:var(--ink); color:var(--paper); } .project:hover .arrow { background:var(--lime); color:var(--ink); } .type { font:700 11px/1 system-ui,sans-serif; letter-spacing:.1em; color:var(--coral); } .project h2 { margin:0; max-width:410px; font-size:clamp(2rem,4vw,3.4rem); line-height:.94; letter-spacing:-.055em; font-weight:400; } .meta { display:flex; align-items:end; justify-content:space-between; gap:15px; font:14px/1.4 system-ui,sans-serif; } .meta p { max-width:300px; margin:0; opacity:.76; } .arrow { display:grid; place-items:center; flex:0 0 43px; width:43px; height:43px; border:1px solid currentColor; border-radius:50%; font:25px/1 system-ui,sans-serif; transition:.18s; } footer { display:flex; justify-content:space-between; gap:20px; padding:31px 0 0; color:var(--muted); font:13px/1.4 system-ui,sans-serif; } @media(max-width:650px) { main { padding:20px 18px 45px; }.intro { padding:65px 0 52px; }.grid { grid-template-columns:1fr; }.project { min-height:230px; } footer { display:block; } footer span+span { display:block; margin-top:7px; } }
+    </style>
   </head>
   <body>
-    <main class="app">
-      <h1>Card PDF Builder</h1>
-      <p class="subtitle">
-        Import images, set quantity and rotation, then export a PDF with one page per card copy.
-      </p>
-
-      <section class="controls">
-        <label class="file-input-label" for="imageInput">Import card images</label>
-        <input id="imageInput" type="file" accept="image/*" multiple />
-
-        <button id="exportBtn" type="button">Export PDF (2.5in × 3.5in high quality)</button>
-        <p id="status" class="status" role="status" aria-live="polite"></p>
+    <main>
+      <header><span class="mark"><i></i> PROJECT SHELF</span><span class="count">02 projects</span></header>
+      <section class="intro"><h1>A small<br />collection<br />of things.</h1><p>Experiments, tools, and game companions — gathered in one practical little place.</p></section>
+      <section class="grid" aria-label="Projects">
+        <a class="project" href="projects/tcg-single-card-pages-proxy-sheet-maker/index.html"><span class="type">TCG TOOL</span><h2>Single Card<br />Pages &amp; Proxy<br />Sheet Maker</h2><span class="meta"><p>Create practical card pages and printable proxy sheets.</p><b class="arrow">↗</b></span></a>
+        <a class="project" href="projects/universus-companion/index.html"><span class="type">COMPANION APP</span><h2>Universus<br />Companion</h2><span class="meta"><p>A companion project for Universus players.</p><b class="arrow">↗</b></span></a>
       </section>
-
-      <section>
-        <h2>Cards</h2>
-        <div id="cardsList" class="cards-list"></div>
-      </section>
+      <footer><span>Built to keep projects easy to find.</span><span>More to come.</span></footer>
     </main>
   </body>
 </html>

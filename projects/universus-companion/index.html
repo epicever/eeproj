@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="night">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Universus Companion - a premium two-player tabletop life and attack tracker." />
+    <title>Universus Companion</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ["Inter", "ui-sans-serif", "system-ui"]
+            }
+          }
+        }
+      };
+    </script>
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.24/dist/full.min.css" rel="stylesheet" type="text/css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main id="app" class="app-shell" aria-label="Universus Companion game tracker">
+      <section id="player-p2" class="player-zone rotated" aria-label="Player 2 panel"></section>
+
+      <section class="center-panel" aria-label="Current attack and game actions">
+        <div id="combat-bar" class="combat-bar glass-card attacker-p1">
+          <div class="combat-readout combat-readout-p2 player-facing" aria-label="Player 2 attack values">
+            <button class="combat-chip damage-chip" type="button" data-attack-chip="damage" data-player-side="p2" aria-label="Adjust attack damage"><strong data-attack-field="damage">0</strong></button>
+            <button class="combat-chip speed-chip attack-icon-mid" type="button" data-attack-chip="speed" data-player-side="p2" data-speed-chip aria-label="Adjust attack speed and attack zone"><strong data-attack-field="speed">0</strong></button>
+          </div>
+
+          <div class="brand-line">
+            <span class="brand-name">Universus Companion</span>
+            <span id="turn-indicator" class="turn-pill"></span>
+          </div>
+
+          <div class="center-actions">
+            <button class="btn btn-primary btn-sm action-glow" data-action="end-turn">End Turn</button>
+            <button class="btn btn-ghost btn-sm danger-outline" data-action="reset-game">Reset</button>
+          </div>
+
+          <div class="combat-readout combat-readout-p1 player-facing" aria-label="Player 1 attack values">
+            <button class="combat-chip damage-chip" type="button" data-attack-chip="damage" data-player-side="p1" aria-label="Adjust attack damage"><strong data-attack-field="damage">0</strong></button>
+            <button class="combat-chip speed-chip attack-icon-mid" type="button" data-attack-chip="speed" data-player-side="p1" data-speed-chip aria-label="Adjust attack speed and attack zone"><strong data-attack-field="speed">0</strong></button>
+          </div>
+          <div id="last-damage" class="last-damage">No damage yet</div>
+        </div>
+      </section>
+
+      <section id="player-p1" class="player-zone" aria-label="Player 1 panel"></section>
+    </main>
+
+    <section id="block-modal" class="block-modal hidden" aria-live="polite"></section>
+
+    <template id="player-template">
+      <article class="player-panel glass-card">
+        <header class="player-topline">
+          <button class="avatar-button" data-action="choose-image" type="button" aria-label="Upload player image">
+            <span class="avatar-thumb"></span>
+            <span class="avatar-label">Image</span>
+          </button>
+          <input class="image-input" type="file" accept="image/*" hidden />
+          <input class="player-name input input-ghost" aria-label="Player name" maxlength="24" />
+          <span class="role-badge"></span>
+        </header>
+        <div class="player-content"></div>
+      </article>
+    </template>
+
+    <script src="script.js"></script>
+  </body>
+</html>

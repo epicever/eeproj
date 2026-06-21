@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Card PDF Builder</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js" defer></script>
+    <script src="script.js" defer></script>
+  </head>
+  <body>
+    <main class="app">
+      <h1>Card PDF Builder</h1>
+      <p class="subtitle">
+        Import images, set quantity and rotation, then export a PDF with one page per card copy.
+      </p>
+
+      <section class="controls">
+        <label class="file-input-label" for="imageInput">Import card images</label>
+        <input id="imageInput" type="file" accept="image/*" multiple />
+
+        <button id="exportBtn" type="button">Export PDF (2.5in × 3.5in high quality)</button>
+        <p id="status" class="status" role="status" aria-live="polite"></p>
+      </section>
+
+      <section>
+        <h2>Cards</h2>
+        <div id="cardsList" class="cards-list"></div>
+      </section>
+    </main>
+  </body>
+</html>
