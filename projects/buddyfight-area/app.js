@@ -243,10 +243,15 @@ function deserialize(d) {
   renderDeck(); renderGallery();
 }
 function loadSavedList() {
+  const names = Object.keys(allDecks());
   const sel = $('#savedDecks'); sel.innerHTML = '<option value="">Saved decks…</option>';
-  Object.keys(allDecks()).forEach(n => sel.append(new Option(n, n)));
-  const pd = $('#playDeck'); pd.innerHTML = '<option value="">Choose a deck…</option>';
-  Object.keys(allDecks()).forEach(n => pd.append(new Option(n, n)));
+  names.forEach(n => sel.append(new Option(n, n)));
+  for (const [id, lead] of [['#playDeckYou', '— current build —'], ['#playDeckOpp', '— none —']]) {
+    const pd = $(id); const keep = pd.value;
+    pd.innerHTML = `<option value="">${lead}</option>`;
+    names.forEach(n => pd.append(new Option(n, n)));
+    pd.value = keep;
+  }
 }
 $('#btnSave').onclick = () => {
   if (!deck.name) deck.name = $('#deckName').value || prompt('Deck name?') || 'Untitled deck';
@@ -270,7 +275,7 @@ $('#btnImport').onclick = () => {
   inp.onchange = () => { const f = inp.files[0]; if (!f) return; const r = new FileReader(); r.onload = () => { try { deserialize(JSON.parse(r.result)); } catch { alert('Bad deck file'); } }; r.readAsText(f); };
   inp.click();
 };
-$('#btnPlay').onclick = () => { $('#btnSave').click(); $('#playDeck').value = deck.name; switchView('play'); };
+$('#btnPlay').onclick = () => { $('#btnSave').click(); $('#playDeckYou').value = deck.name; switchView('play'); };
 
 /* ---------- export deck images as ZIP (one file per copy) ---------- */
 function safeName(s) {
@@ -374,111 +379,149 @@ $('#deckToggle').onclick = () => $('.deckpanel').classList.toggle('open');
 function routeFromHash() { switchView(location.hash.replace('#', '') === 'play' ? 'play' : 'builder'); }
 
 /* =========================================================
-   TEST MODE — manual sandbox with helpers
+   TEST MODE — two-sided sandbox (prep for multiplayer)
+   game = { players:{you,opp}, active }
+   player = { inst:Map uid->{uid,id,zone,rested,facedown}, deckOrder:[], life }
+   Each player owns its own zones; the board mirrors them vertically.
    ========================================================= */
 const ZONES = ['flag', 'buddy', 'left', 'center', 'right', 'item', 'gauge', 'drop', 'soul', 'deck', 'hand'];
-let play = null; // {inst:Map uid->{uid,id,rested,facedown,zone}, life, gauge, dieSeed}
+const ZONE_LABELS = { flag: 'Flag', buddy: 'Buddy', left: 'Left', center: 'Center', right: 'Right', item: 'Item', gauge: 'Gauge', drop: 'Drop', soul: 'Soul / Set', deck: 'Deck', hand: 'Hand' };
+const SIDES = [['opp', 'Opponent'], ['you', 'You']];   // render order: opponent on top
+let game = null;
 let uidSeq = 1;
 
-function startGame() {
-  const name = $('#playDeck').value;
-  const d = name ? allDecks()[name] : serialize();
-  if (!d || !d.cards || !d.cards.length) { alert('Choose a deck with cards first.'); return; }
-  play = { inst: new Map(), life: 10, gauge: 2 };
-  // build deck instances (exclude flag)
-  const order = [];
-  for (const [id, q] of d.cards) for (let i = 0; i < q; i++) {
-    const uid = uidSeq++; play.inst.set(uid, { uid, id, rested: false, facedown: false, zone: 'deck' }); order.push(uid);
+/* build the two mirrored field DOMs once */
+function buildBoard() {
+  const board = $('#board'); board.innerHTML = '';
+  for (const [owner, label] of SIDES) {
+    const f = el('section', 'field field-' + owner); f.dataset.owner = owner;
+    const counters = ['life', 'gauge', 'hand', 'deck']
+      .map(c => `<span class="fc">${c[0].toUpperCase() + c.slice(1)} <b data-c="${c}">0</b></span>`).join('');
+    const mat = ZONES.map(z => {
+      const cls = (z === 'deck' ? 'pile' : 'zone') + ' z-' + z;
+      return `<div class="${cls}" data-owner="${owner}" data-zone="${z}"><span class="zl">${ZONE_LABELS[z]}</span></div>`;
+    }).join('');
+    f.innerHTML =
+      `<div class="fstatus"><span class="fname">${label}</span>${counters}` +
+      `<button class="actbtn" data-make="${owner}">Make active</button></div>` +
+      `<div class="mat">${mat}</div>`;
+    board.append(f);
   }
-  shuffle(order);
-  play.deckOrder = order;
-  // flag
-  if (d.flag) { const uid = uidSeq++; play.inst.set(uid, { uid, id: d.flag, rested: false, facedown: false, zone: 'flag' }); }
-  // initial gauge: top 2 to gauge, opening hand 6
-  for (let i = 0; i < 2 && play.deckOrder.length; i++) moveTo(play.deckOrder.shift(), 'gauge');
-  drawN(6);
-  $('#lifeCount').textContent = play.life; $('#gaugeCount').textContent = play.gauge;
+}
+
+function newPlayer() { return { inst: new Map(), deckOrder: [], life: 10 }; }
+function buildDeckInto(p, d) {
+  for (const [id, q] of d.cards) for (let i = 0; i < q; i++) {
+    const uid = uidSeq++; p.inst.set(uid, { uid, id, rested: false, facedown: true, zone: 'deck' }); p.deckOrder.push(uid);
+  }
+  shuffle(p.deckOrder);
+  if (d.flag) { const uid = uidSeq++; p.inst.set(uid, { uid, id: d.flag, rested: false, facedown: false, zone: 'flag' }); }
+  for (let i = 0; i < 2 && p.deckOrder.length; i++) pMoveTo(p, p.deckOrder[0], 'gauge');  // opening gauge
+  pDraw(p, 6);                                                                            // opening hand
+}
+
+function startGame() {
+  const youName = $('#playDeckYou').value, oppName = $('#playDeckOpp').value;
+  const youDeck = youName ? allDecks()[youName] : serialize();
+  if (!youDeck || !youDeck.cards || !youDeck.cards.length) { alert('Pick a deck for You (or build one in Deck Builder first).'); return; }
+  game = { players: { you: newPlayer(), opp: newPlayer() }, active: 'you' };
+  buildDeckInto(game.players.you, youDeck);
+  const oppDeck = oppName ? allDecks()[oppName] : null;
+  if (oppDeck && oppDeck.cards && oppDeck.cards.length) buildDeckInto(game.players.opp, oppDeck);
   renderTable();
 }
+
 function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } }
-function moveTo(uid, zone, top) {
-  const it = play.inst.get(uid); if (!it) return;
-  // remove from deckOrder if present
-  const k = play.deckOrder.indexOf(uid); if (k >= 0) play.deckOrder.splice(k, 1);
+function pMoveTo(p, uid, zone, top) {
+  const it = p.inst.get(uid); if (!it) return;
+  const k = p.deckOrder.indexOf(uid); if (k >= 0) p.deckOrder.splice(k, 1);
   it.zone = zone;
-  if (zone === 'deck') { it.facedown = true; it.rested = false; top ? play.deckOrder.unshift(uid) : play.deckOrder.push(uid); }
+  if (zone === 'deck') { it.facedown = true; it.rested = false; top ? p.deckOrder.unshift(uid) : p.deckOrder.push(uid); }
 }
-function drawN(n) { for (let i = 0; i < n && play.deckOrder.length; i++) { const uid = play.deckOrder[0]; moveTo(uid, 'hand'); play.inst.get(uid).facedown = false; } }
+function pDraw(p, n) { for (let i = 0; i < n && p.deckOrder.length; i++) { const uid = p.deckOrder[0]; pMoveTo(p, uid, 'hand'); p.inst.get(uid).facedown = false; } }
+function activeP() { return game && game.players[game.active]; }
 
 function renderTable() {
-  if (!play) return;
-  const buckets = {}; ZONES.forEach(z => buckets[z] = []);
-  for (const it of play.inst.values()) buckets[it.zone].push(it);
-  // deck respects order
-  buckets.deck = play.deckOrder.map(uid => play.inst.get(uid));
-  for (const z of ZONES) {
-    const zoneEl = document.querySelector(`.table [data-zone="${z}"]`);
-    [...zoneEl.querySelectorAll('.pcard')].forEach(n => n.remove());
-    if (z === 'deck') {
-      // show stacked back
-      const n = buckets.deck.length;
-      $('#deckCount').textContent = n;
-      for (let i = Math.max(0, n - 6); i < n; i++) {
-        const c = makePCard(buckets.deck[i], true); c.style.left = (i - Math.max(0, n - 6)) * 3 + 'px'; c.style.top = (i - Math.max(0, n - 6)) * 2 + 'px';
-        zoneEl.append(c);
+  if (!game) return;
+  for (const [owner] of SIDES) {
+    const p = game.players[owner];
+    const buckets = {}; ZONES.forEach(z => buckets[z] = []);
+    for (const it of p.inst.values()) buckets[it.zone].push(it);
+    buckets.deck = p.deckOrder.map(uid => p.inst.get(uid));
+    for (const z of ZONES) {
+      const zoneEl = document.querySelector(`.field-${owner} [data-zone="${z}"]`);
+      [...zoneEl.querySelectorAll('.pcard')].forEach(n => n.remove());
+      if (z === 'deck') {
+        const n = buckets.deck.length, base = Math.max(0, n - 6);
+        for (let i = base; i < n; i++) {
+          const c = makePCard(buckets.deck[i], true, owner);
+          c.style.left = (i - base) * 3 + 'px'; c.style.top = (i - base) * 2 + 'px';
+          zoneEl.append(c);
+        }
+      } else {
+        buckets[z].forEach(it => zoneEl.append(makePCard(it, false, owner)));
       }
-    } else {
-      buckets[z].forEach(it => zoneEl.append(makePCard(it, false)));
-      if (z === 'hand') $('#handCount').textContent = buckets.hand.length;
     }
+    const fs = document.querySelector(`.field-${owner} .fstatus`);
+    fs.querySelector('[data-c="life"]').textContent = p.life;
+    fs.querySelector('[data-c="gauge"]').textContent = buckets.gauge.length;
+    fs.querySelector('[data-c="hand"]').textContent = buckets.hand.length;
+    fs.querySelector('[data-c="deck"]').textContent = buckets.deck.length;
   }
+  document.querySelectorAll('.field').forEach(f => f.classList.toggle('active', f.dataset.owner === game.active));
+  $('#activeName').textContent = game.active === 'you' ? 'You' : 'Opponent';
 }
-function makePCard(it, asPile) {
-  const c = BY_ID.get(it.id);
+function makePCard(it, asPile, owner) {
   const d = el('div', 'pcard' + (it.rested ? ' rested' : '') + ((it.facedown || asPile) ? ' facedown' : ''));
-  d.dataset.uid = it.uid;
+  d.dataset.uid = it.uid; d.dataset.owner = owner;
   d.draggable = true;
   d.innerHTML = `<img src="${IMG(it.id)}" alt="" onerror="this.style.visibility='hidden'">`;
   return d;
 }
 
-/* drag & drop */
-let dragUid = null;
-document.addEventListener('dragstart', e => { const p = e.target.closest('.pcard'); if (!p) return; dragUid = +p.dataset.uid; p.classList.add('dragging'); e.dataTransfer.setData('text/plain', dragUid); });
-document.addEventListener('dragend', e => { const p = e.target.closest('.pcard'); if (p) p.classList.remove('dragging'); dragUid = null; });
-$$('.table .zone, .table .pile').forEach(z => {
-  z.addEventListener('dragover', e => { e.preventDefault(); z.classList.add('dragover'); });
-  z.addEventListener('dragleave', () => z.classList.remove('dragover'));
-  z.addEventListener('drop', e => {
-    e.preventDefault(); z.classList.remove('dragover');
-    if (dragUid == null) return;
-    const it = play.inst.get(dragUid); const zone = z.dataset.zone;
-    const fromDeck = it.zone === 'deck';
-    moveTo(dragUid, zone);
-    if (zone !== 'deck' && fromDeck) it.facedown = false; // drawn/pulled from deck reveals
-    renderTable();
-  });
+/* drag & drop — restricted to the card owner's own zones */
+let drag = null; // {uid, owner}
+document.addEventListener('dragstart', e => { const p = e.target.closest('.pcard'); if (!p) return; drag = { uid: +p.dataset.uid, owner: p.dataset.owner }; p.classList.add('dragging'); e.dataTransfer.setData('text/plain', drag.uid); });
+document.addEventListener('dragend', e => { const p = e.target.closest('.pcard'); if (p) p.classList.remove('dragging'); drag = null; });
+$('#board').addEventListener('dragover', e => { const z = e.target.closest('.zone,.pile'); if (z && drag && z.dataset.owner === drag.owner) { e.preventDefault(); z.classList.add('dragover'); } });
+$('#board').addEventListener('dragleave', e => { const z = e.target.closest('.zone,.pile'); if (z) z.classList.remove('dragover'); });
+$('#board').addEventListener('drop', e => {
+  const z = e.target.closest('.zone,.pile'); if (!z || !drag || z.dataset.owner !== drag.owner) return;
+  e.preventDefault(); z.classList.remove('dragover');
+  const p = game.players[drag.owner]; const it = p.inst.get(drag.uid); const fromDeck = it.zone === 'deck';
+  pMoveTo(p, drag.uid, z.dataset.zone);
+  if (z.dataset.zone !== 'deck' && fromDeck) it.facedown = false;   // revealed when pulled from deck
+  renderTable();
 });
-// click deck pile to draw
-document.querySelector('.table [data-zone="deck"]').addEventListener('click', () => { if (play) { drawN(1); renderTable(); } });
 
-/* double-click rest/stand; hover preview; right-click menu */
-$('#table').addEventListener('dblclick', e => { const p = e.target.closest('.pcard'); if (!p || !play) return; const it = play.inst.get(+p.dataset.uid); it.rested = !it.rested; renderTable(); });
-$('#table').addEventListener('mousemove', e => { const p = e.target.closest('.pcard'); if (p) { const it = play.inst.get(+p.dataset.uid); if (it && !it.facedown) showPreview(it.id, e); else hidePreview(); } else hidePreview(); });
-$('#table').addEventListener('mouseleave', hidePreview);
-$('#table').addEventListener('contextmenu', e => {
-  const p = e.target.closest('.pcard'); if (!p || !play) { return; }
-  e.preventDefault(); const uid = +p.dataset.uid; const it = play.inst.get(uid);
+/* click: draw from a deck pile, or make a side active */
+$('#board').addEventListener('click', e => {
+  if (!game) return;
+  const pile = e.target.closest('.pile');
+  if (pile) { pDraw(game.players[pile.dataset.owner], 1); renderTable(); return; }
+  const mk = e.target.closest('[data-make]'); const field = e.target.closest('.field');
+  const owner = mk ? mk.dataset.make : field ? field.dataset.owner : null;
+  if (owner && owner !== game.active) { game.active = owner; renderTable(); }
+});
+
+/* double-click rest/stand; hover preview; right-click menu — all owner-aware */
+$('#board').addEventListener('dblclick', e => { const pc = e.target.closest('.pcard'); if (!pc || !game) return; const it = game.players[pc.dataset.owner].inst.get(+pc.dataset.uid); it.rested = !it.rested; renderTable(); });
+$('#board').addEventListener('mousemove', e => { const pc = e.target.closest('.pcard'); if (pc && game) { const it = game.players[pc.dataset.owner].inst.get(+pc.dataset.uid); if (it && !it.facedown) showPreview(it.id, e); else hidePreview(); } else hidePreview(); });
+$('#board').addEventListener('mouseleave', hidePreview);
+$('#board').addEventListener('contextmenu', e => {
+  const pc = e.target.closest('.pcard'); if (!pc || !game) return;
+  e.preventDefault();
+  const p = game.players[pc.dataset.owner]; const uid = +pc.dataset.uid; const it = p.inst.get(uid);
   openCtx(e.clientX, e.clientY, [
     ['Rest / Stand', () => { it.rested = !it.rested; }],
     ['Flip face ' + (it.facedown ? 'up' : 'down'), () => { it.facedown = !it.facedown; }],
-    ['To hand', () => moveTo(uid, 'hand')],
-    ['To gauge', () => moveTo(uid, 'gauge')],
-    ['To drop', () => moveTo(uid, 'drop')],
-    ['To soul/set', () => moveTo(uid, 'soul')],
-    ['Deck top', () => moveTo(uid, 'deck', true)],
-    ['Deck bottom', () => moveTo(uid, 'deck', false)],
-    ['Shuffle into deck', () => { moveTo(uid, 'deck'); shuffle(play.deckOrder); }],
+    ['To hand', () => pMoveTo(p, uid, 'hand')],
+    ['To gauge', () => pMoveTo(p, uid, 'gauge')],
+    ['To drop', () => pMoveTo(p, uid, 'drop')],
+    ['To soul/set', () => pMoveTo(p, uid, 'soul')],
+    ['Deck top', () => pMoveTo(p, uid, 'deck', true)],
+    ['Deck bottom', () => pMoveTo(p, uid, 'deck', false)],
+    ['Shuffle into deck', () => { pMoveTo(p, uid, 'deck'); shuffle(p.deckOrder); }],
   ]);
 });
 function openCtx(x, y, items) {
@@ -489,23 +532,25 @@ function openCtx(x, y, items) {
 }
 document.addEventListener('click', e => { if (!e.target.closest('#ctxMenu')) $('#ctxMenu').classList.add('hidden'); });
 
-/* play controls */
+/* play controls — operate on the active side */
 $('#btnStart').onclick = startGame;
-$('#btnDraw').onclick = () => { if (play) { drawN(1); renderTable(); } };
-$('#btnShuffleDeck').onclick = () => { if (play) { shuffle(play.deckOrder); renderTable(); flashBar('Deck shuffled'); } };
-$('#btnMulligan').onclick = () => {
-  if (!play) return;
-  for (const it of [...play.inst.values()]) if (it.zone === 'hand') moveTo(it.uid, 'deck');
-  shuffle(play.deckOrder); drawN(6); renderTable(); flashBar('Mulligan — redrew 6');
-};
 $('#btnReset').onclick = startGame;
-$('#btnLifeUp').onclick = () => { if (play) { play.life++; $('#lifeCount').textContent = play.life; } };
-$('#btnLifeDn').onclick = () => { if (play) { play.life--; $('#lifeCount').textContent = play.life; } };
-$('#btnGaugeUp').onclick = () => { if (play) { play.gauge++; $('#gaugeCount').textContent = play.gauge; } };
-$('#btnGaugeDn').onclick = () => { if (play && play.gauge > 0) { play.gauge--; $('#gaugeCount').textContent = play.gauge; } };
+$('#btnSwitch').onclick = () => { if (game) { game.active = game.active === 'you' ? 'opp' : 'you'; renderTable(); } };
+$('#btnDraw').onclick = () => { const p = activeP(); if (p) { pDraw(p, 1); renderTable(); } };
+$('#btnShuffleDeck').onclick = () => { const p = activeP(); if (p) { shuffle(p.deckOrder); renderTable(); flashBar('Shuffled ' + game.active + ' deck'); } };
+$('#btnMulligan').onclick = () => {
+  const p = activeP(); if (!p) return;
+  for (const it of [...p.inst.values()]) if (it.zone === 'hand') pMoveTo(p, it.uid, 'deck');
+  shuffle(p.deckOrder); pDraw(p, 6); renderTable(); flashBar('Mulligan — redrew 6');
+};
+$('#btnLifeUp').onclick = () => { const p = activeP(); if (p) { p.life++; renderTable(); } };
+$('#btnLifeDn').onclick = () => { const p = activeP(); if (p) { p.life--; renderTable(); } };
+$('#btnGaugeUp').onclick = () => { const p = activeP(); if (p && p.deckOrder.length) { pMoveTo(p, p.deckOrder[0], 'gauge'); renderTable(); } };   // charge top of deck
+$('#btnGaugeDn').onclick = () => { const p = activeP(); if (!p) return; const g = [...p.inst.values()].find(it => it.zone === 'gauge'); if (g) { pMoveTo(p, g.uid, 'drop'); renderTable(); } };   // pay 1 gauge
 $('#btnFlip').onclick = () => flashBar('Coin: ' + (Math.random() < .5 ? 'Heads' : 'Tails'));
 $('#btnDie').onclick = () => { $('#dieVal').textContent = 1 + Math.floor(Math.random() * 6); };
 function flashBar(msg) { const s = $('#loadStatus'); const o = s.textContent; s.textContent = msg; setTimeout(() => s.textContent = o, 1400); }
+buildBoard();
 
 window.addEventListener('hashchange', routeFromHash);
 
