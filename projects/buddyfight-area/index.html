@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="description" content="Buddyfight Area — a browser deck builder and manual play-test sandbox for Future Card Buddyfight, recreated from the classic simulator." />
+<title>Buddyfight Area — Deck Builder &amp; Test Mode</title>
+<link rel="stylesheet" href="app.css" />
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="../../index.html" title="Back to Project Shelf">◂ Shelf</a>
+  <nav class="tabs">
+    <button class="tab" data-view="builder">Deck Builder</button>
+    <button class="tab" data-view="play">Test Mode</button>
+  </nav>
+  <span class="status" id="loadStatus">Loading cards…</span>
+</header>
+
+<!-- ============ DECK BUILDER ============ -->
+<main id="view-builder" class="view">
+  <section class="browser">
+    <div class="filters">
+      <input type="search" id="q" placeholder="Search name or text…" autocomplete="off" />
+      <select id="fWorld"><option value="">All worlds</option></select>
+      <select id="fType"><option value="">All types</option></select>
+      <select id="fSize"><option value="">Any size</option><option value="0">Size 0</option><option value="1">Size 1</option><option value="2">Size 2</option><option value="3">Size 3</option></select>
+      <select id="fSet"><option value="">All sets</option></select>
+      <select id="fAttr"><option value="">All attributes</option></select>
+      <label class="chk"><input type="checkbox" id="fLegal" /> legal for flag</label>
+      <span class="resultCount" id="resultCount"></span>
+    </div>
+    <div class="gallery" id="gallery"></div>
+  </section>
+
+  <aside class="deckpanel">
+    <div class="deckhead">
+      <input type="text" id="deckName" placeholder="Untitled deck" />
+      <div class="deckcounts">
+        <span id="cMain" class="badge">0/50</span>
+        <span id="cFlag" class="badge warn">no flag</span>
+        <span id="cBuddy" class="badge">no buddy</span>
+      </div>
+    </div>
+    <div class="deckslots">
+      <div class="slot flagslot" id="flagSlot"><span class="slotlabel">FLAG</span><span class="slotempty">drop a flag here</span></div>
+    </div>
+    <div class="decklist" id="decklist"></div>
+    <div class="deckactions">
+      <button id="btnNew">New</button>
+      <select id="savedDecks"><option value="">Saved decks…</option></select>
+      <button id="btnSave">Save</button>
+      <button id="btnDelete" title="Delete saved deck">🗑</button>
+      <button id="btnExport">Export</button>
+      <button id="btnImport">Import</button>
+      <button id="btnZip" title="Download all card images in this deck as a ZIP (one file per copy)">ZIP imgs</button>
+      <button id="btnPlay" class="primary">Test ▸</button>
+    </div>
+    <div class="deckvalidate" id="deckValidate"></div>
+  </aside>
+</main>
+
+<!-- ============ TEST MODE ============ -->
+<main id="view-play" class="view hidden">
+  <div class="playbar">
+    <select id="playDeck"><option value="">Choose a deck…</option></select>
+    <button id="btnStart" class="primary">Start game</button>
+    <button id="btnMulligan">Mulligan</button>
+    <button id="btnDraw">Draw</button>
+    <button id="btnShuffleDeck">Shuffle</button>
+    <span class="spacer"></span>
+    <button id="btnGaugeUp">+ Gauge</button>
+    <span class="counter">Gauge <b id="gaugeCount">0</b></span>
+    <button id="btnGaugeDn">−</button>
+    <button id="btnLifeUp">+ Life</button>
+    <span class="counter">Life <b id="lifeCount">10</b></span>
+    <button id="btnLifeDn">−</button>
+    <button id="btnFlip">Coin</button>
+    <button id="btnDie">D6 <b id="dieVal"></b></button>
+    <button id="btnReset">Reset board</button>
+  </div>
+  <div class="table" id="table">
+    <div class="zone z-flag" data-zone="flag"><span class="zl">Flag</span></div>
+    <div class="zone z-buddy" data-zone="buddy"><span class="zl">Buddy</span></div>
+    <div class="centerrow">
+      <div class="zone z-left" data-zone="left"><span class="zl">Left</span></div>
+      <div class="zone z-center" data-zone="center"><span class="zl">Center</span></div>
+      <div class="zone z-right" data-zone="right"><span class="zl">Right</span></div>
+    </div>
+    <div class="zone z-item" data-zone="item"><span class="zl">Item</span></div>
+    <div class="zone z-gauge" data-zone="gauge"><span class="zl">Gauge</span></div>
+    <div class="zone z-drop" data-zone="drop"><span class="zl">Drop</span></div>
+    <div class="zone z-soul" data-zone="soul"><span class="zl">Soul / Set</span></div>
+    <div class="pile z-deck" data-zone="deck"><span class="zl">Deck <b id="deckCount">0</b></span></div>
+    <div class="zone z-hand" data-zone="hand"><span class="zl">Hand <b id="handCount">0</b></span></div>
+  </div>
+  <p class="playhint">Drag cards between zones. Double-click a card to rest/stand it. Right-click for actions (flip, to deck top/bottom, soul). Click a pile to draw.</p>
+</main>
+
+<!-- card preview -->
+<div id="preview" class="preview hidden"><img id="previewImg" alt="" /><div id="previewInfo"></div></div>
+<div id="ctxMenu" class="ctxmenu hidden"></div>
+
+<script src="lib/jszip.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
