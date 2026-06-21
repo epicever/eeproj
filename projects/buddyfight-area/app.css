@@ -1,7 +1,7 @@
 :root{
   --ink:#152321; --paper:#f7f4ec; --line:#cfccbe; --coral:#e8573f; --lime:#c8e359;
   --muted:#60716d; --felt:#1d3b34; --felt2:#16302a; --gold:#d9b15a;
-  --card-w:104px; --card-r:6px;
+  --card-w:104px; --card-r:6px; --card-h:calc(var(--card-w) * 264 / 190);
 }
 *{box-sizing:border-box}
 html,body{margin:0;height:100%}
@@ -33,7 +33,8 @@ select,input[type=text],input[type=search]{font:inherit;border:1px solid var(--l
 .filters select{max-width:150px}
 .chk{display:flex;align-items:center;gap:5px;font-size:13px;color:var(--muted)}
 .resultCount{margin-left:auto;font-size:12px;color:var(--muted)}
-.gallery{flex:1;overflow-y:auto;display:grid;grid-template-columns:repeat(auto-fill,var(--card-w));gap:9px;padding:12px;align-content:start}
+.gallery{flex:1;overflow-y:auto;display:grid;grid-template-columns:repeat(auto-fill,var(--card-w));grid-auto-rows:var(--card-h);gap:9px;padding:12px;align-content:start}
+.galmore{grid-column:1/-1;padding:14px 6px;text-align:center;color:var(--muted);font-size:12px}
 
 .card{position:relative;width:var(--card-w);border-radius:var(--card-r);overflow:hidden;cursor:pointer;background:#0002;aspect-ratio:190/264;box-shadow:0 1px 3px #0003}
 .card img{width:100%;height:100%;object-fit:cover;display:block;background:#1a2a2a}
