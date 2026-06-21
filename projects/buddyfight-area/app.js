@@ -337,9 +337,12 @@ function switchView(v) {
   $$('.view').forEach(x => x.classList.add('hidden'));
   $('#view-' + v).classList.remove('hidden');
   $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === v));
+  $('#deckToggle').classList.toggle('hidden', v !== 'builder');   // drawer toggle only in builder
+  if (v !== 'builder') $('.deckpanel').classList.remove('open');
   location.hash = v;
 }
 $$('.tab').forEach(t => t.onclick = () => switchView(t.dataset.view));
+$('#deckToggle').onclick = () => $('.deckpanel').classList.toggle('open');
 function routeFromHash() { switchView(location.hash.replace('#', '') === 'play' ? 'play' : 'builder'); }
 
 /* =========================================================
