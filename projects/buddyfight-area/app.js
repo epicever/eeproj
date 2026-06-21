@@ -389,6 +389,7 @@ const ZONE_LABELS = { flag: 'Flag', buddy: 'Buddy', left: 'Left', center: 'Cente
 const SIDES = [['opp', 'Opponent'], ['you', 'You']];   // render order: opponent on top
 let game = null;
 let uidSeq = 1;
+let selected = null;   // {uid, owner} — tap-to-move selection (works on touch + desktop)
 
 /* build the two mirrored field DOMs once */
 function buildBoard() {
@@ -425,6 +426,7 @@ function startGame() {
   const youDeck = youName ? allDecks()[youName] : serialize();
   if (!youDeck || !youDeck.cards || !youDeck.cards.length) { alert('Pick a deck for You (or build one in Deck Builder first).'); return; }
   game = { players: { you: newPlayer(), opp: newPlayer() }, active: 'you' };
+  selected = null;
   buildDeckInto(game.players.you, youDeck);
   const oppDeck = oppName ? allDecks()[oppName] : null;
   if (oppDeck && oppDeck.cards && oppDeck.cards.length) buildDeckInto(game.players.opp, oppDeck);
@@ -472,7 +474,8 @@ function renderTable() {
   $('#activeName').textContent = game.active === 'you' ? 'You' : 'Opponent';
 }
 function makePCard(it, asPile, owner) {
-  const d = el('div', 'pcard' + (it.rested ? ' rested' : '') + ((it.facedown || asPile) ? ' facedown' : ''));
+  const sel = selected && selected.uid === it.uid && !asPile;
+  const d = el('div', 'pcard' + (it.rested ? ' rested' : '') + ((it.facedown || asPile) ? ' facedown' : '') + (sel ? ' sel' : ''));
   d.dataset.uid = it.uid; d.dataset.owner = owner;
   d.draggable = true;
   d.innerHTML = `<img src="${IMG(it.id)}" alt="" onerror="this.style.visibility='hidden'">`;
@@ -481,7 +484,7 @@ function makePCard(it, asPile, owner) {
 
 /* drag & drop — restricted to the card owner's own zones */
 let drag = null; // {uid, owner}
-document.addEventListener('dragstart', e => { const p = e.target.closest('.pcard'); if (!p) return; drag = { uid: +p.dataset.uid, owner: p.dataset.owner }; p.classList.add('dragging'); e.dataTransfer.setData('text/plain', drag.uid); });
+document.addEventListener('dragstart', e => { const p = e.target.closest('.pcard'); if (!p) return; drag = { uid: +p.dataset.uid, owner: p.dataset.owner }; selected = null; p.classList.add('dragging'); e.dataTransfer.setData('text/plain', drag.uid); });
 document.addEventListener('dragend', e => { const p = e.target.closest('.pcard'); if (p) p.classList.remove('dragging'); drag = null; });
 $('#board').addEventListener('dragover', e => { const z = e.target.closest('.zone,.pile'); if (z && drag && z.dataset.owner === drag.owner) { e.preventDefault(); z.classList.add('dragover'); } });
 $('#board').addEventListener('dragleave', e => { const z = e.target.closest('.zone,.pile'); if (z) z.classList.remove('dragover'); });
@@ -491,28 +494,48 @@ $('#board').addEventListener('drop', e => {
   const p = game.players[drag.owner]; const it = p.inst.get(drag.uid); const fromDeck = it.zone === 'deck';
   pMoveTo(p, drag.uid, z.dataset.zone);
   if (z.dataset.zone !== 'deck' && fromDeck) it.facedown = false;   // revealed when pulled from deck
-  renderTable();
+  selected = null; renderTable();
 });
 
-/* click: draw from a deck pile, or make a side active */
+/* tap-to-move (touch-friendly, also works on desktop):
+   tap a card to pick it up, tap a same-side zone to drop it.
+   Deck pile taps draw; empty taps make that side active. */
 $('#board').addEventListener('click', e => {
   if (!game) return;
-  const pile = e.target.closest('.pile');
-  if (pile) { pDraw(game.players[pile.dataset.owner], 1); renderTable(); return; }
-  const mk = e.target.closest('[data-make]'); const field = e.target.closest('.field');
-  const owner = mk ? mk.dataset.make : field ? field.dataset.owner : null;
-  if (owner && owner !== game.active) { game.active = owner; renderTable(); }
+  const mk = e.target.closest('[data-make]');
+  if (mk) { game.active = mk.dataset.make; selected = null; renderTable(); return; }
+
+  const card = e.target.closest('.pcard');
+  if (card) {
+    const owner = card.dataset.owner, uid = +card.dataset.uid;
+    const it = game.players[owner].inst.get(uid);
+    if (it.zone === 'deck') { pDraw(game.players[owner], 1); selected = null; renderTable(); return; } // tap deck = draw
+    selected = (selected && selected.uid === uid) ? null : { uid, owner };                            // toggle pick-up
+    if (selected && owner !== game.active) game.active = owner;
+    renderTable(); return;
+  }
+
+  const zone = e.target.closest('.zone,.pile');
+  if (zone) {
+    const owner = zone.dataset.owner, z = zone.dataset.zone;
+    if (selected && selected.owner === owner) {            // drop the held card here
+      const p = game.players[owner]; const it = p.inst.get(selected.uid); const fromDeck = it.zone === 'deck';
+      pMoveTo(p, selected.uid, z); if (z !== 'deck' && fromDeck) it.facedown = false;
+      selected = null; renderTable(); return;
+    }
+    selected = null;                                                                                    // not a valid drop — drop the selection
+    if (zone.classList.contains('pile')) { pDraw(game.players[owner], 1); renderTable(); return; }     // empty deck tap = draw
+    game.active = owner; renderTable();                                                                 // empty tap = activate that side
+  }
 });
 
 /* double-click rest/stand; hover preview; right-click menu — all owner-aware */
 $('#board').addEventListener('dblclick', e => { const pc = e.target.closest('.pcard'); if (!pc || !game) return; const it = game.players[pc.dataset.owner].inst.get(+pc.dataset.uid); it.rested = !it.rested; renderTable(); });
 $('#board').addEventListener('mousemove', e => { const pc = e.target.closest('.pcard'); if (pc && game) { const it = game.players[pc.dataset.owner].inst.get(+pc.dataset.uid); if (it && !it.facedown) showPreview(it.id, e); else hidePreview(); } else hidePreview(); });
 $('#board').addEventListener('mouseleave', hidePreview);
-$('#board').addEventListener('contextmenu', e => {
-  const pc = e.target.closest('.pcard'); if (!pc || !game) return;
-  e.preventDefault();
+function openCardMenu(pc, x, y) {
   const p = game.players[pc.dataset.owner]; const uid = +pc.dataset.uid; const it = p.inst.get(uid);
-  openCtx(e.clientX, e.clientY, [
+  openCtx(x, y, [
     ['Rest / Stand', () => { it.rested = !it.rested; }],
     ['Flip face ' + (it.facedown ? 'up' : 'down'), () => { it.facedown = !it.facedown; }],
     ['To hand', () => pMoveTo(p, uid, 'hand')],
@@ -523,7 +546,21 @@ $('#board').addEventListener('contextmenu', e => {
     ['Deck bottom', () => pMoveTo(p, uid, 'deck', false)],
     ['Shuffle into deck', () => { pMoveTo(p, uid, 'deck'); shuffle(p.deckOrder); }],
   ]);
+}
+$('#board').addEventListener('contextmenu', e => {
+  const pc = e.target.closest('.pcard'); if (!pc || !game) return;
+  e.preventDefault(); openCardMenu(pc, e.clientX, e.clientY);
 });
+/* touch long-press opens the same menu (no right-click on mobile) */
+let lpTimer = null, lpCard = null;
+$('#board').addEventListener('touchstart', e => {
+  const pc = e.target.closest('.pcard'); if (!pc || !game) return;
+  lpCard = pc; const t = e.touches[0];
+  lpTimer = setTimeout(() => { lpTimer = null; if (lpCard) openCardMenu(lpCard, t.clientX, t.clientY); }, 480);
+}, { passive: true });
+function cancelLongPress() { if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; } lpCard = null; }
+$('#board').addEventListener('touchend', cancelLongPress);
+$('#board').addEventListener('touchmove', cancelLongPress);
 function openCtx(x, y, items) {
   const m = $('#ctxMenu'); m.innerHTML = '';
   items.forEach(([label, fn]) => { const b = el('button', null, label); b.onclick = () => { fn(); m.classList.add('hidden'); renderTable(); }; m.append(b); });

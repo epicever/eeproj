@@ -88,11 +88,13 @@ select,input[type=text],input[type=search]{font:inherit;border:1px solid var(--l
 .playbar button{background:#2a4d44;color:#eef;border-color:#0005;padding:5px 9px}
 .playbar button:hover{background:#36685b}
 .playbar button.primary{background:var(--coral);border-color:var(--coral)}
+.pbactions{display:contents}   /* transparent on desktop — buttons flow inline */
 
 /* two stacked player fields, opponent mirrored on top */
 .board{flex:1;display:flex;flex-direction:column;overflow:auto;min-height:0}
 .field{flex:1;display:flex;flex-direction:column;min-height:340px;padding:5px 10px;transition:background .15s}
 .field.active{background:#ffffff0d}
+.field-you{flex-direction:column-reverse}   /* your status bar drops to the bottom edge so monster rows meet at the midline */
 .field-opp{border-bottom:2px solid var(--gold)}
 .fstatus{display:flex;align-items:center;gap:13px;padding:3px 4px;color:#dfe;font-size:12px}
 .fstatus .fname{font-weight:700;letter-spacing:.04em;color:#fff}
@@ -134,7 +136,9 @@ select,input[type=text],input[type=search]{font:inherit;border:1px solid var(--l
 .pcard.facedown{background:#243}
 .pcard.facedown::after{content:'';position:absolute;inset:0;background:repeating-linear-gradient(45deg,#1c3a33,#1c3a33 6px,#244b41 6px,#244b41 12px);border:2px solid var(--gold)}
 .pcard.dragging{opacity:.4}
+.pcard.sel{outline:3px solid var(--lime);outline-offset:-1px;box-shadow:0 0 0 2px #000a,0 0 12px var(--lime)}
 .pile .pcard{position:absolute}
+.playhint{margin:0;padding:6px 12px;font-size:12px;line-height:1.3;color:#bcd;background:var(--felt2)}
 
 /* preview */
 .preview{position:fixed;z-index:50;pointer-events:none;background:#000c;border:1px solid var(--gold);border-radius:8px;padding:6px;max-width:330px;box-shadow:0 8px 30px #000a}
@@ -161,4 +165,35 @@ select,input[type=text],input[type=search]{font:inherit;border:1px solid var(--l
     border-radius:24px;padding:10px 16px;font-weight:600;
     background:var(--coral);color:#fff;border-color:var(--coral);box-shadow:0 3px 10px #0004}
   .deck-toggle:hover{background:#c8442f;color:#fff}
+}
+
+/* ===== TEST MODE on phones ===== */
+@media(max-width:640px){
+  /* row 1: deck pickers + Start.  row 2: gameplay buttons in their own scroll strip */
+  .playbar{gap:4px;padding:5px 7px}
+  .playbar .pl{font-size:10px;gap:2px}
+  .playbar select{min-width:72px;padding:3px 4px;font-size:12px}
+  .playbar .spacer{display:none}
+  .playbar .counter{display:none}                   /* active side already shown by the gold field highlight */
+  .playbar button{padding:4px 8px;font-size:12px}
+  .pbactions{display:flex;flex:1 1 100%;gap:4px;overflow-x:auto;overflow-y:hidden;padding-bottom:1px;
+    scrollbar-width:thin;scrollbar-color:#ffffff40 transparent;-webkit-overflow-scrolling:touch}
+  .pbactions::-webkit-scrollbar{height:5px}
+  .pbactions::-webkit-scrollbar-thumb{background:#ffffff40;border-radius:3px}
+  .pbactions > button{flex:0 0 auto}
+  .playhint{font-size:10px;line-height:1.25;padding:4px 8px;max-height:2.8em;overflow:hidden}
+
+  .field{min-height:0;padding:3px 7px}
+  .fstatus{gap:9px;font-size:11px}
+  .fstatus .fc b{font-size:13px}
+  .fstatus .actbtn{padding:2px 7px;font-size:11px}
+
+  .mat{gap:4px;grid-template-columns:46px 1fr 1fr 1fr 46px;grid-auto-rows:minmax(60px,1fr)}
+  .zone,.pile{padding:12px 3px 3px;border-radius:7px}
+  .zl{font-size:8px;top:2px;left:4px;letter-spacing:.04em}
+  .pcard{width:40px;border-radius:3px}
+  .pcard.rested{margin:6px 9px}
+  .pcard.sel{outline-width:2px}
+  .ctxmenu{min-width:170px}
+  .ctxmenu button{padding:9px 12px}                /* bigger tap targets */
 }

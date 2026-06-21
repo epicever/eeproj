@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="description" content="Buddyfight Area — a browser deck builder and manual play-test sandbox for Future Card Buddyfight, recreated from the classic simulator." />
 <title>Buddyfight Area — Deck Builder &amp; Test Mode</title>
-<link rel="stylesheet" href="app.css?v=2" />
+<link rel="stylesheet" href="app.css?v=5" />
 </head>
 <body>
 <header class="topbar">
@@ -70,20 +70,22 @@
     <button id="btnStart" class="primary">Start</button>
     <span class="spacer"></span>
     <span class="counter">Active: <b id="activeName">—</b></span>
-    <button id="btnSwitch" title="Switch active side">Switch</button>
-    <button id="btnDraw">Draw</button>
-    <button id="btnMulligan">Mull</button>
-    <button id="btnShuffleDeck">Shuffle</button>
-    <button id="btnGaugeUp">+Gauge</button>
-    <button id="btnGaugeDn">−Gauge</button>
-    <button id="btnLifeUp">+Life</button>
-    <button id="btnLifeDn">−Life</button>
-    <button id="btnFlip">Coin</button>
-    <button id="btnDie">D6 <b id="dieVal"></b></button>
-    <button id="btnReset">Reset</button>
+    <div class="pbactions">
+      <button id="btnSwitch" title="Switch active side">Switch</button>
+      <button id="btnDraw">Draw</button>
+      <button id="btnMulligan">Mull</button>
+      <button id="btnShuffleDeck">Shuffle</button>
+      <button id="btnGaugeUp">+Gauge</button>
+      <button id="btnGaugeDn">−Gauge</button>
+      <button id="btnLifeUp">+Life</button>
+      <button id="btnLifeDn">−Life</button>
+      <button id="btnFlip">Coin</button>
+      <button id="btnDie">D6 <b id="dieVal"></b></button>
+      <button id="btnReset">Reset</button>
+    </div>
   </div>
   <div class="board" id="board"><!-- two mirrored player fields injected by app.js --></div>
-  <p class="playhint">Two-sided field — opponent on top, you on the bottom, monster rows facing across the middle. Click a side (or <b>Switch</b>) to make it active; Draw / Gauge / Life act on the active side. Drag cards between that side's zones, double-click to rest/stand, right-click for actions, click the deck to draw.</p>
+  <p class="playhint">Two-sided field — opponent on top, you on the bottom, monster rows facing across the middle. Tap a side (or <b>Switch</b>) to make it active; Draw / Gauge / Life act on it. <b>Tap a card then tap a zone</b> to move it (or drag on desktop); double-tap to rest/stand; right-click or long-press a card for more actions; tap the deck to draw.</p>
 </main>
 
 <!-- card preview -->
@@ -91,6 +93,6 @@
 <div id="ctxMenu" class="ctxmenu hidden"></div>
 
 <script src="lib/jszip.min.js"></script>
-<script src="app.js?v=2"></script>
+<script src="app.js?v=5"></script>
 </body>
 </html>
