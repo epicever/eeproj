@@ -877,7 +877,13 @@ function applyAttackChipTap(info) {
   const stateKey = getAttackStateKey(info.stat);
   if (!stateKey) return;
 
-  changeAttackValue(stateKey, info.pointerSide === "left" ? -1 : 1);
+  // Player 2's controls are rendered at the top of the phone and rotated for
+  // their point of view, so their perceived left/right is the inverse of the
+  // screen coordinates reported by the pointer event.
+  const isTopPlayer = info.playerId === "p2";
+  const isLeftSide = info.pointerSide === "left";
+  const delta = (isLeftSide === isTopPlayer) ? 1 : -1;
+  changeAttackValue(stateKey, delta);
 }
 
 // ---------- Event delegation ----------
@@ -944,13 +950,6 @@ document.addEventListener("pointercancel", () => {
 document.addEventListener("pointerleave", () => {
   clearLifePressTimer();
   clearAttackPressTimer();
-});
-
-document.addEventListener("dblclick", (event) => {
-  const lifeCard = event.target.closest('.stat-card[data-control="life"]');
-  if (!lifeCard) return;
-  event.preventDefault();
-  openMaxLifeModal(getLifeCardPlayerId(lifeCard));
 });
 
 document.addEventListener("click", (event) => {
