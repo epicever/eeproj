@@ -1,5 +1,5 @@
 {
-  "name": "wobble-yard",
+  "name": "furry-dockers",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "cannon-es": "^0.20.0",
+    "peerjs": "^1.5.5",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "three": "^0.180.0"

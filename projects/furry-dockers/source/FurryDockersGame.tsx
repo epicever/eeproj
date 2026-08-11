@@ -1,9 +1,11 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import * as CANNON from "cannon-es";
+import Peer, { type DataConnection } from "peerjs";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
 
 type Crate = { mesh: THREE.Mesh; vel: THREE.Vector3; half: number };
 type RagdollNode = {
@@ -22,6 +24,33 @@ type BoneLink = {
   bindDirection: THREE.Vector3;
   bindWorldQuaternion: THREE.Quaternion;
 };
+type PosePacket = {
+  type: "pose";
+  playerId?: string;
+  position: [number, number, number];
+  yaw: number;
+  bones: Array<[string, number, number, number, number]>;
+};
+type NetworkPacket = PosePacket | { type: "count"; count: number } | { type: "leave"; playerId: string } | { type: "full" };
+type RemoteAvatar = {
+  container: THREE.Group;
+  bones: Map<string, THREE.Bone>;
+};
+
+const MAX_PLAYERS = 8;
+const PEER_PREFIX = "furry-dockers-";
+const ROOM_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+
+function makeRoomCode() {
+  const values = crypto.getRandomValues(new Uint8Array(4));
+  return Array.from(values, (value) => ROOM_LETTERS[value % ROOM_LETTERS.length]).join("");
+}
+
+function isPosePacket(value: unknown): value is PosePacket {
+  if (!value || typeof value !== "object") return false;
+  const packet = value as Partial<PosePacket>;
+  return packet.type === "pose" && Array.isArray(packet.position) && typeof packet.yaw === "number" && Array.isArray(packet.bones);
+}
 
 function applyMuscle(node: RagdollNode, target: THREE.Vector3, strengthScale = 1) {
   const body = node.body;
@@ -43,9 +72,160 @@ function pointMesh(geometry: THREE.BufferGeometry, material: THREE.Material, sce
   return mesh;
 }
 
-export default function WobbleGame() {
+export default function FurryDockersGame() {
   const mountRef = useRef<HTMLDivElement>(null);
   const touchKeys = useRef<Record<string, boolean>>({});
+  const localPoseRef = useRef<PosePacket | null>(null);
+  const receivePoseRef = useRef<(playerId: string, pose: PosePacket) => void>(() => undefined);
+  const removeRemoteRef = useRef<(playerId: string) => void>(() => undefined);
+  const clearRemotesRef = useRef<() => void>(() => undefined);
+  const peerRef = useRef<Peer | null>(null);
+  const hostConnectionRef = useRef<DataConnection | null>(null);
+  const guestConnectionsRef = useRef(new Map<string, DataConnection>());
+  const networkTimerRef = useRef<number | null>(null);
+  const roomFullRef = useRef(false);
+  const roleRef = useRef<"solo" | "host" | "guest">("solo");
+  const [roomCode, setRoomCode] = useState("");
+  const [joinCode, setJoinCode] = useState("");
+  const [networkStatus, setNetworkStatus] = useState("PLAYING SOLO");
+  const [playerCount, setPlayerCount] = useState(1);
+
+  const stopPoseTimer = () => {
+    if (networkTimerRef.current !== null) window.clearInterval(networkTimerRef.current);
+    networkTimerRef.current = null;
+  };
+
+  const broadcastCount = () => {
+    const count = 1 + guestConnectionsRef.current.size;
+    setPlayerCount(count);
+    guestConnectionsRef.current.forEach((connection) => {
+      if (connection.open) connection.send({ type: "count", count } satisfies NetworkPacket);
+    });
+  };
+
+  const startPoseTimer = () => {
+    stopPoseTimer();
+    networkTimerRef.current = window.setInterval(() => {
+      const pose = localPoseRef.current;
+      if (!pose) return;
+      if (roleRef.current === "host") {
+        const packet: PosePacket = { ...pose, playerId: peerRef.current?.id };
+        guestConnectionsRef.current.forEach((connection) => {
+          if (connection.open) connection.send(packet);
+        });
+      } else if (roleRef.current === "guest" && hostConnectionRef.current?.open) {
+        hostConnectionRef.current.send(pose);
+      }
+    }, 67);
+  };
+
+  const leaveRoom = () => {
+    stopPoseTimer();
+    hostConnectionRef.current?.close();
+    hostConnectionRef.current = null;
+    guestConnectionsRef.current.forEach((connection) => connection.close());
+    guestConnectionsRef.current.clear();
+    peerRef.current?.destroy();
+    peerRef.current = null;
+    roleRef.current = "solo";
+    roomFullRef.current = false;
+    clearRemotesRef.current();
+    setRoomCode("");
+    setPlayerCount(1);
+    setNetworkStatus("PLAYING SOLO");
+  };
+
+  const createRoom = () => {
+    leaveRoom();
+    const code = makeRoomCode();
+    const peer = new Peer(`${PEER_PREFIX}${code.toLowerCase()}`);
+    peerRef.current = peer;
+    roleRef.current = "host";
+    setRoomCode(code);
+    setNetworkStatus("OPENING ROOM…");
+    peer.on("open", () => {
+      setNetworkStatus("ROOM OPEN");
+      startPoseTimer();
+    });
+    peer.on("connection", (connection) => {
+      connection.on("open", () => {
+        if (guestConnectionsRef.current.size >= MAX_PLAYERS - 1) {
+          connection.send({ type: "full" } satisfies NetworkPacket);
+          window.setTimeout(() => connection.close(), 150);
+          return;
+        }
+        guestConnectionsRef.current.set(connection.peer, connection);
+        broadcastCount();
+      });
+      connection.on("data", (value) => {
+        if (!isPosePacket(value) || !guestConnectionsRef.current.has(connection.peer)) return;
+        const packet: PosePacket = { ...value, playerId: connection.peer };
+        receivePoseRef.current(connection.peer, packet);
+        guestConnectionsRef.current.forEach((other, playerId) => {
+          if (playerId !== connection.peer && other.open) other.send(packet);
+        });
+      });
+      connection.on("close", () => {
+        if (!guestConnectionsRef.current.delete(connection.peer)) return;
+        removeRemoteRef.current(connection.peer);
+        guestConnectionsRef.current.forEach((other) => {
+          if (other.open) other.send({ type: "leave", playerId: connection.peer } satisfies NetworkPacket);
+        });
+        broadcastCount();
+      });
+    });
+    peer.on("error", (error) => {
+      setNetworkStatus(error.type === "unavailable-id" ? "CODE IN USE — CREATE AGAIN" : "ROOM CONNECTION ERROR");
+      stopPoseTimer();
+    });
+  };
+
+  const joinRoom = () => {
+    const code = joinCode.trim().toUpperCase();
+    if (!/^[A-Z]{4}$/.test(code)) {
+      setNetworkStatus("ENTER A 4-LETTER CODE");
+      return;
+    }
+    leaveRoom();
+    setJoinCode(code);
+    setRoomCode(code);
+    setNetworkStatus("JOINING…");
+    roomFullRef.current = false;
+    const peer = new Peer();
+    peerRef.current = peer;
+    roleRef.current = "guest";
+    peer.on("open", () => {
+      const connection = peer.connect(`${PEER_PREFIX}${code.toLowerCase()}`, { reliable: false, serialization: "json" });
+      hostConnectionRef.current = connection;
+      connection.on("open", () => {
+        setNetworkStatus("CONNECTED");
+        startPoseTimer();
+      });
+      connection.on("data", (value) => {
+        const packet = value as NetworkPacket;
+        if (isPosePacket(packet) && packet.playerId && packet.playerId !== peer.id) receivePoseRef.current(packet.playerId, packet);
+        else if (packet?.type === "count") setPlayerCount(packet.count);
+        else if (packet?.type === "leave") removeRemoteRef.current(packet.playerId);
+        else if (packet?.type === "full") {
+          roomFullRef.current = true;
+          setNetworkStatus("ROOM IS FULL");
+          stopPoseTimer();
+          connection.close();
+        }
+      });
+      connection.on("close", () => {
+        if (!roomFullRef.current) setNetworkStatus("HOST DISCONNECTED");
+        stopPoseTimer();
+      });
+      connection.on("error", () => setNetworkStatus("COULD NOT JOIN ROOM"));
+    });
+    peer.on("error", () => {
+      setNetworkStatus("ROOM NOT FOUND");
+      stopPoseTimer();
+    });
+  };
+
+  useEffect(() => () => leaveRoom(), []);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -81,7 +261,7 @@ export default function WobbleGame() {
 
     const physicsWorld = new CANNON.World({ gravity: new CANNON.Vec3(0, -18, 0) });
     physicsWorld.broadphase = new CANNON.SAPBroadphase(physicsWorld);
-    physicsWorld.solver.iterations = 18;
+    (physicsWorld.solver as CANNON.GSSolver).iterations = 18;
     physicsWorld.allowSleep = false;
     const physicsMaterial = new CANNON.Material("yard");
     physicsWorld.defaultContactMaterial.friction = 0.72;
@@ -153,9 +333,60 @@ export default function WobbleGame() {
     scene.add(rigContainer);
     const ragdollNodes = new Map<string, RagdollNode>();
     const boneLinks: BoneLink[] = [];
+    const localBones = new Map<string, THREE.Bone>();
+    const latestRemotePoses = new Map<string, PosePacket>();
+    const remoteAvatars = new Map<string, RemoteAvatar>();
     const bindHipsWorld = new THREE.Vector3(0, 1.8, 0);
     let rigScene: THREE.Group | null = null;
+    let remoteTemplate: THREE.Group | null = null;
     let disposed = false;
+
+    const removeRemote = (playerId: string) => {
+      latestRemotePoses.delete(playerId);
+      const avatar = remoteAvatars.get(playerId);
+      if (!avatar) return;
+      avatar.container.traverse((object) => {
+        if (!(object instanceof THREE.SkinnedMesh)) return;
+        const materials = Array.isArray(object.material) ? object.material : [object.material];
+        materials.forEach((material) => material.dispose());
+      });
+      scene.remove(avatar.container);
+      remoteAvatars.delete(playerId);
+    };
+    receivePoseRef.current = (playerId, pose) => latestRemotePoses.set(playerId, pose);
+    removeRemoteRef.current = removeRemote;
+    clearRemotesRef.current = () => Array.from(remoteAvatars.keys()).forEach(removeRemote);
+
+    const createRemoteAvatar = (playerId: string, pose: PosePacket) => {
+      if (!remoteTemplate) return null;
+      const container = new THREE.Group();
+      const clone = cloneSkeleton(remoteTemplate) as THREE.Group;
+      let hash = 0;
+      for (const character of playerId) hash = (hash * 31 + character.charCodeAt(0)) | 0;
+      const playerColor = new THREE.Color().setHSL(Math.abs(hash % 360) / 360, 0.68, 0.56);
+      const bones = new Map<string, THREE.Bone>();
+      clone.traverse((object) => {
+        if (object instanceof THREE.Bone) bones.set(object.name, object);
+        if (!(object instanceof THREE.SkinnedMesh)) return;
+        object.castShadow = true;
+        object.receiveShadow = true;
+        object.frustumCulled = false;
+        const tintMaterial = (material: THREE.Material) => {
+          const tinted = material.clone();
+          if ("color" in tinted && tinted.color instanceof THREE.Color) tinted.color.lerp(playerColor, 0.62);
+          return tinted;
+        };
+        object.material = Array.isArray(object.material) ? object.material.map(tintMaterial) : tintMaterial(object.material);
+      });
+      container.add(clone);
+      container.position.fromArray(pose.position);
+      container.rotation.y = pose.yaw;
+      scene.add(container);
+      const avatar = { container, bones };
+      remoteAvatars.set(playerId, avatar);
+      return avatar;
+    };
+
     new GLTFLoader().load(
       "./models/gang-beast-rigged.glb",
       (gltf) => {
@@ -174,7 +405,8 @@ export default function WobbleGame() {
         rigScene.position.y -= box.min.y;
         rigScene.position.z -= center.z;
         rigScene.updateMatrixWorld(true);
-        const bones = new Map<string, THREE.Bone>();
+        const bones = localBones;
+        bones.clear();
         rigScene.traverse((object) => {
           if (object instanceof THREE.SkinnedMesh) {
             object.castShadow = true;
@@ -189,6 +421,7 @@ export default function WobbleGame() {
             bones.set(canonicalName, object);
           }
         });
+        remoteTemplate = cloneSkeleton(rigScene) as THREE.Group;
 
         const profiles: Array<[string, number, number, number, number]> = [
           ["mixamorig:Hips", 6, 0.34, 620, 42],
@@ -312,6 +545,7 @@ export default function WobbleGame() {
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.target instanceof HTMLInputElement) return;
       if (["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "ShiftLeft"].includes(event.code)) {
         event.preventDefault();
         keys.add(event.code);
@@ -484,7 +718,26 @@ export default function WobbleGame() {
           link.bone.quaternion.copy(desiredLocal);
           link.bone.updateMatrixWorld(true);
         }
+
+        localPoseRef.current = {
+          type: "pose",
+          position: rigContainer.position.toArray() as [number, number, number],
+          yaw: rigContainer.rotation.y,
+          bones: Array.from(localBones, ([name, bone]) => [name, bone.quaternion.x, bone.quaternion.y, bone.quaternion.z, bone.quaternion.w]),
+        };
       }
+
+      const remoteBlend = 1 - Math.exp(-12 * dt);
+      latestRemotePoses.forEach((pose, playerId) => {
+        const avatar = remoteAvatars.get(playerId) ?? createRemoteAvatar(playerId, pose);
+        if (!avatar) return;
+        avatar.container.position.lerp(new THREE.Vector3().fromArray(pose.position), remoteBlend);
+        const yawDifference = Math.atan2(Math.sin(pose.yaw - avatar.container.rotation.y), Math.cos(pose.yaw - avatar.container.rotation.y));
+        avatar.container.rotation.y += yawDifference * remoteBlend;
+        pose.bones.forEach(([name, x, y, z, w]) => {
+          avatar.bones.get(name)?.quaternion.slerp(new THREE.Quaternion(x, y, z, w), remoteBlend);
+        });
+      });
 
       const cameraTarget = root.clone().add(new THREE.Vector3(0, 1.15, 0));
       const cameraPosition = cameraTarget.clone().add(new THREE.Vector3(0, 14.5, 9.8));
@@ -514,6 +767,11 @@ export default function WobbleGame() {
       renderer.domElement.removeEventListener("contextmenu", onContextMenu);
       window.removeEventListener("mouseup", onMouseUp);
       window.removeEventListener("blur", onWindowBlur);
+      localPoseRef.current = null;
+      receivePoseRef.current = () => undefined;
+      removeRemoteRef.current = () => undefined;
+      clearRemotesRef.current = () => undefined;
+      Array.from(remoteAvatars.keys()).forEach(removeRemote);
       renderer.dispose();
       renderer.domElement.remove();
     };
@@ -530,7 +788,7 @@ export default function WobbleGame() {
 
   return (
     <main className="game-shell">
-      <div ref={mountRef} className="game-stage" aria-label="Playable 3D wobble arena" />
+      <div ref={mountRef} className="game-stage" aria-label="Playable 3D Furry Dockers arena" />
 
       <section className="controls-panel" aria-label="Game controls">
         <div className="key-grid" aria-hidden="true">
@@ -544,6 +802,36 @@ export default function WobbleGame() {
           <p><strong>R ARM</strong> HOLD RIGHT CLICK</p>
           <p><strong>RESET</strong> PRESS R</p>
         </div>
+      </section>
+
+      <section className="multiplayer-panel" aria-label="Multiplayer room controls">
+        {roomCode ? (
+          <>
+            <div className="room-line">
+              <span>ROOM</span>
+              <button className="room-code" onClick={() => navigator.clipboard?.writeText(roomCode)} title="Copy room code">{roomCode}</button>
+              <strong>{playerCount}/{MAX_PLAYERS}</strong>
+            </div>
+            <p>{networkStatus}</p>
+            <button className="leave-button" onClick={leaveRoom}>LEAVE</button>
+          </>
+        ) : (
+          <>
+            <div className="join-line">
+              <button className="create-button" onClick={createRoom}>CREATE ROOM</button>
+              <input
+                aria-label="Four-letter room code"
+                value={joinCode}
+                maxLength={4}
+                placeholder="CODE"
+                onChange={(event) => setJoinCode(event.target.value.replace(/[^a-z]/gi, "").toUpperCase())}
+                onKeyDown={(event) => { if (event.key === "Enter") joinRoom(); }}
+              />
+              <button className="join-button" onClick={joinRoom}>JOIN</button>
+            </div>
+            <p>{networkStatus}</p>
+          </>
+        )}
       </section>
 
       <div className="touch-pad" aria-label="Touch movement controls">

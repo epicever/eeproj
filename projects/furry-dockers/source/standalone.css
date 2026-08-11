@@ -3,6 +3,7 @@
 html, body, #root { width:100%; height:100%; margin:0; overflow:hidden; }
 body { background:var(--deep); color:var(--ink); font-family:Arial,Helvetica,sans-serif; }
 button, kbd { font:inherit; }
+button { cursor:pointer; }
 .game-shell { position:relative; width:100vw; height:100dvh; overflow:hidden; background:var(--deep); }
 .game-stage { position:absolute; inset:0; }
 .game-stage canvas { display:block; width:100%; height:100%; }
@@ -12,8 +13,22 @@ kbd { display:grid; place-items:center; width:27px; height:27px; color:var(--ink
 .control-copy { display:grid; gap:6px; }
 .control-copy p { margin:0; color:rgba(244,241,223,.55); font:600 9px/1.2 monospace; letter-spacing:.06em; }
 .control-copy strong { display:inline-block; width:48px; color:var(--acid); }
+.multiplayer-panel { position:absolute; top:clamp(18px,3vw,38px); right:clamp(18px,3vw,42px); min-width:270px; padding:12px; color:var(--ink); background:var(--panel); border-right:3px solid var(--acid); backdrop-filter:blur(9px); }
+.multiplayer-panel p { margin:8px 0 0; color:rgba(244,241,223,.58); font:700 9px/1 monospace; letter-spacing:.08em; }
+.join-line,.room-line { display:flex; align-items:center; gap:7px; }
+.multiplayer-panel button,.multiplayer-panel input { height:32px; border:1px solid rgba(255,255,255,.28); border-radius:2px; color:var(--ink); background:rgba(255,255,255,.08); font:800 10px/1 monospace; letter-spacing:.06em; }
+.multiplayer-panel button:hover,.multiplayer-panel button:focus-visible { color:var(--deep); background:var(--acid); outline:none; }
+.create-button { flex:1; padding:0 10px; }
+.join-button,.leave-button { padding:0 10px; }
+.multiplayer-panel input { width:61px; padding:0 7px; text-transform:uppercase; outline:none; }
+.multiplayer-panel input:focus { border-color:var(--acid); }
+.room-line > span { color:rgba(244,241,223,.55); font:800 9px/1 monospace; letter-spacing:.08em; }
+.room-line strong { margin-left:auto; color:var(--acid); font:800 11px/1 monospace; }
+.room-code { min-width:68px; padding:0 9px; color:var(--acid)!important; font-size:14px!important; letter-spacing:.16em!important; }
+.room-code:hover,.room-code:focus-visible { color:var(--deep)!important; }
+.leave-button { position:absolute; right:9px; bottom:7px; height:21px!important; border:0!important; color:rgba(244,241,223,.5)!important; background:transparent!important; font-size:8px!important; }
 .touch-pad { display:none; position:absolute; right:22px; bottom:22px; width:142px; height:142px; }
 .touch-pad button { position:absolute; width:48px; height:48px; border:1px solid rgba(255,255,255,.35); border-radius:11px; color:var(--ink); background:rgba(15,19,16,.72); backdrop-filter:blur(8px); touch-action:none; }
 .touch-pad button:active { color:var(--deep); background:var(--acid); }
 .touch-up { top:0; left:47px; }.touch-left { top:47px; left:0; }.touch-down { bottom:0; left:47px; }.touch-right { top:47px; right:0; }
-@media (max-width:720px), (pointer:coarse) { .controls-panel { display:none; }.touch-pad { display:block; } }
+@media (max-width:720px), (pointer:coarse) { .controls-panel { display:none; }.touch-pad { display:block; }.multiplayer-panel { min-width:250px; } }
