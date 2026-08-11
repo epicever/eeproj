@@ -1,10 +1,10 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import WobbleGame from "./WobbleGame";
+import FurryDockersGame from "./FurryDockersGame";
 import "./standalone.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <WobbleGame />
+    <FurryDockersGame />
   </StrictMode>,
 );
