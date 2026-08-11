@@ -1,0 +1,19 @@
+:root { --ink:#f4f1df; --acid:#f5d94f; --deep:#151915; --panel:rgba(15,19,16,.84); }
+* { box-sizing:border-box; }
+html, body, #root { width:100%; height:100%; margin:0; overflow:hidden; }
+body { background:var(--deep); color:var(--ink); font-family:Arial,Helvetica,sans-serif; }
+button, kbd { font:inherit; }
+.game-shell { position:relative; width:100vw; height:100dvh; overflow:hidden; background:var(--deep); }
+.game-stage { position:absolute; inset:0; }
+.game-stage canvas { display:block; width:100%; height:100%; }
+.controls-panel { position:absolute; left:clamp(20px,4vw,58px); bottom:clamp(22px,4vw,48px); display:flex; align-items:center; gap:18px; padding:14px; background:var(--panel); border-left:3px solid var(--acid); backdrop-filter:blur(9px); }
+.key-grid { display:grid; grid-template-columns:repeat(3,27px); gap:4px; }
+kbd { display:grid; place-items:center; width:27px; height:27px; color:var(--ink); border:1px solid rgba(255,255,255,.45); border-radius:2px; background:rgba(255,255,255,.09); font:700 10px/1 monospace; box-shadow:inset 0 -2px rgba(0,0,0,.35); }
+.control-copy { display:grid; gap:6px; }
+.control-copy p { margin:0; color:rgba(244,241,223,.55); font:600 9px/1.2 monospace; letter-spacing:.06em; }
+.control-copy strong { display:inline-block; width:48px; color:var(--acid); }
+.touch-pad { display:none; position:absolute; right:22px; bottom:22px; width:142px; height:142px; }
+.touch-pad button { position:absolute; width:48px; height:48px; border:1px solid rgba(255,255,255,.35); border-radius:11px; color:var(--ink); background:rgba(15,19,16,.72); backdrop-filter:blur(8px); touch-action:none; }
+.touch-pad button:active { color:var(--deep); background:var(--acid); }
+.touch-up { top:0; left:47px; }.touch-left { top:47px; left:0; }.touch-down { bottom:0; left:47px; }.touch-right { top:47px; right:0; }
+@media (max-width:720px), (pointer:coarse) { .controls-panel { display:none; }.touch-pad { display:block; } }
