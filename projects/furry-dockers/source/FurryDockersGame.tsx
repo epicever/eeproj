@@ -25,18 +25,88 @@ type BoneLink = {
   bindWorldQuaternion: THREE.Quaternion;
   smoothIntent: THREE.Vector3 | null;
 };
-type PosePacket = {
-  type: "pose";
-  playerId?: string;
-  position: [number, number, number];
-  yaw: number;
-  bones: Array<[string, number, number, number, number]>;
-};
-type NetworkPacket = PosePacket | { type: "count"; count: number } | { type: "leave"; playerId: string } | { type: "full" };
+// Only these bones are ever rotated by the ragdoll, so only these are worth sending.
+// Both ends share the order, which is what lets a packet drop the bone names entirely.
+const SYNC_BONES = [
+  "mixamorig:Hips", "mixamorig:Spine", "mixamorig:Spine1", "mixamorig:Spine2", "mixamorig:Neck",
+  "mixamorig:LeftShoulder", "mixamorig:LeftArm", "mixamorig:LeftForeArm",
+  "mixamorig:RightShoulder", "mixamorig:RightArm", "mixamorig:RightForeArm",
+  "mixamorig:LeftUpLeg", "mixamorig:LeftLeg", "mixamorig:LeftFoot",
+  "mixamorig:RightUpLeg", "mixamorig:RightLeg", "mixamorig:RightFoot",
+] as const;
+// type, slot, position (3 x float32), yaw (int16), quaternions (4 x int16 each)
+const POSE_BYTES = 2 + 12 + 2 + SYNC_BONES.length * 8;
+const POSE_MESSAGE = 1;
+const POSE_SEND_HZ = 15;
+// Remote avatars are drawn this far in the past, so there is always a later snapshot to
+// interpolate towards. Valve's entity interpolation: it trades a little lag for motion
+// that never jumps, and it is what stops low packet rates reading as teleporting.
+const INTERP_DELAY_MS = 130;
+const SNAPSHOT_LIMIT = 12;
+
+type Snapshot = { time: number; x: number; y: number; z: number; yaw: number; quaternions: Float32Array };
 type RemoteAvatar = {
   container: THREE.Group;
-  bones: Map<string, THREE.Bone>;
+  bones: Array<THREE.Bone | undefined>;
+  snapshots: Snapshot[];
 };
+
+function encodePose(
+  view: DataView,
+  slot: number,
+  position: THREE.Vector3,
+  yaw: number,
+  bones: Array<THREE.Bone | undefined>,
+) {
+  view.setUint8(0, POSE_MESSAGE);
+  view.setUint8(1, slot);
+  view.setFloat32(2, position.x);
+  view.setFloat32(6, position.y);
+  view.setFloat32(10, position.z);
+  view.setInt16(14, Math.max(-32767, Math.min(32767, Math.round((yaw / Math.PI) * 32767))));
+  for (let index = 0; index < bones.length; index += 1) {
+    const bone = bones[index];
+    const offset = 16 + index * 8;
+    const q = bone ? bone.quaternion : null;
+    // Unit quaternion components live in [-1,1], so 16 bits each is far finer than
+    // anything visible on a limb and a quarter the size of a float32.
+    view.setInt16(offset, q ? Math.round(q.x * 32767) : 0);
+    view.setInt16(offset + 2, q ? Math.round(q.y * 32767) : 0);
+    view.setInt16(offset + 4, q ? Math.round(q.z * 32767) : 0);
+    view.setInt16(offset + 6, q ? Math.round(q.w * 32767) : 32767);
+  }
+}
+
+function decodePose(view: DataView, time: number): { slot: number; snapshot: Snapshot } {
+  const quaternions = new Float32Array(SYNC_BONES.length * 4);
+  for (let index = 0; index < SYNC_BONES.length; index += 1) {
+    const offset = 16 + index * 8;
+    quaternions[index * 4] = view.getInt16(offset) / 32767;
+    quaternions[index * 4 + 1] = view.getInt16(offset + 2) / 32767;
+    quaternions[index * 4 + 2] = view.getInt16(offset + 4) / 32767;
+    quaternions[index * 4 + 3] = view.getInt16(offset + 6) / 32767;
+  }
+  return {
+    slot: view.getUint8(1),
+    snapshot: {
+      time,
+      x: view.getFloat32(2),
+      y: view.getFloat32(6),
+      z: view.getFloat32(10),
+      yaw: (view.getInt16(14) / 32767) * Math.PI,
+      quaternions,
+    },
+  };
+}
+
+function toDataView(data: unknown): DataView | null {
+  if (data instanceof ArrayBuffer) return data.byteLength >= POSE_BYTES ? new DataView(data) : null;
+  if (ArrayBuffer.isView(data)) {
+    const view = data as ArrayBufferView;
+    return view.byteLength >= POSE_BYTES ? new DataView(view.buffer, view.byteOffset, view.byteLength) : null;
+  }
+  return null;
+}
 type BodyView = "full" | "fade" | "arms" | "hidden";
 type ComfortSettings = {
   fov: number;
@@ -96,12 +166,6 @@ function supportsPointerLook() {
   return !window.matchMedia?.("(pointer: coarse)").matches;
 }
 
-function isPosePacket(value: unknown): value is PosePacket {
-  if (!value || typeof value !== "object") return false;
-  const packet = value as Partial<PosePacket>;
-  return packet.type === "pose" && Array.isArray(packet.position) && typeof packet.yaw === "number" && Array.isArray(packet.bones);
-}
-
 function applyMuscle(node: RagdollNode, target: THREE.Vector3, strengthScale = 1, gravityAssist = 0) {
   const body = node.body;
   const force = new CANNON.Vec3(
@@ -131,13 +195,15 @@ export default function FurryDockersGame() {
   const toggleViewRef = useRef<() => void>(() => undefined);
   const requestLookRef = useRef<() => void>(() => undefined);
   const touchKeys = useRef<Record<string, boolean>>({});
-  const localPoseRef = useRef<PosePacket | null>(null);
-  const receivePoseRef = useRef<(playerId: string, pose: PosePacket) => void>(() => undefined);
-  const removeRemoteRef = useRef<(playerId: string) => void>(() => undefined);
+  const receivePoseRef = useRef<(slot: number, snapshot: Snapshot) => void>(() => undefined);
+  const removeRemoteRef = useRef<(slot: number) => void>(() => undefined);
+  const keepRemotesRef = useRef<(slots: Set<number>) => void>(() => undefined);
   const clearRemotesRef = useRef<() => void>(() => undefined);
   const peerRef = useRef<Peer | null>(null);
   const hostConnectionRef = useRef<DataConnection | null>(null);
   const guestConnectionsRef = useRef(new Map<string, DataConnection>());
+  const guestSlotsRef = useRef(new Map<string, number>());
+  const localSlotRef = useRef(0);
   const networkTimerRef = useRef<number | null>(null);
   const roomFullRef = useRef(false);
   const roleRef = useRef<"solo" | "host" | "guest">("solo");
@@ -160,28 +226,31 @@ export default function FurryDockersGame() {
     networkTimerRef.current = null;
   };
 
-  const broadcastCount = () => {
-    const count = 1 + guestConnectionsRef.current.size;
-    setPlayerCount(count);
+  // The roster doubles as the player count and as each guest's slot assignment. It is
+  // resent on a timer because the pose channel is unreliable by design, so a dropped
+  // roster has to heal itself rather than stranding a guest without a slot.
+  const broadcastRoster = () => {
+    const players: Record<string, number> = {};
+    guestConnectionsRef.current.forEach((_, peerId) => {
+      const slot = guestSlotsRef.current.get(peerId);
+      if (slot !== undefined) players[peerId] = slot;
+    });
+    setPlayerCount(1 + guestConnectionsRef.current.size);
+    const message = JSON.stringify({ type: "roster", players });
     guestConnectionsRef.current.forEach((connection) => {
-      if (connection.open) connection.send({ type: "count", count } satisfies NetworkPacket);
+      if (connection.open) connection.send(message);
     });
   };
 
   const startPoseTimer = () => {
     stopPoseTimer();
-    networkTimerRef.current = window.setInterval(() => {
-      const pose = localPoseRef.current;
-      if (!pose) return;
-      if (roleRef.current === "host") {
-        const packet: PosePacket = { ...pose, playerId: peerRef.current?.id };
-        guestConnectionsRef.current.forEach((connection) => {
-          if (connection.open) connection.send(packet);
-        });
-      } else if (roleRef.current === "guest" && hostConnectionRef.current?.open) {
-        hostConnectionRef.current.send(pose);
-      }
-    }, 67);
+    if (roleRef.current === "host") networkTimerRef.current = window.setInterval(broadcastRoster, 1000);
+  };
+
+  const claimSlot = () => {
+    const taken = new Set(guestSlotsRef.current.values());
+    for (let slot = 1; slot < MAX_PLAYERS; slot += 1) if (!taken.has(slot)) return slot;
+    return -1;
   };
 
   const leaveRoom = () => {
@@ -190,6 +259,8 @@ export default function FurryDockersGame() {
     hostConnectionRef.current = null;
     guestConnectionsRef.current.forEach((connection) => connection.close());
     guestConnectionsRef.current.clear();
+    guestSlotsRef.current.clear();
+    localSlotRef.current = 0;
     peerRef.current?.destroy();
     peerRef.current = null;
     roleRef.current = "solo";
@@ -214,29 +285,34 @@ export default function FurryDockersGame() {
     });
     peer.on("connection", (connection) => {
       connection.on("open", () => {
-        if (guestConnectionsRef.current.size >= MAX_PLAYERS - 1) {
-          connection.send({ type: "full" } satisfies NetworkPacket);
-          window.setTimeout(() => connection.close(), 150);
+        const slot = claimSlot();
+        if (slot < 0) {
+          connection.send(JSON.stringify({ type: "full" }));
+          window.setTimeout(() => connection.close(), 300);
           return;
         }
         guestConnectionsRef.current.set(connection.peer, connection);
-        broadcastCount();
+        guestSlotsRef.current.set(connection.peer, slot);
+        broadcastRoster();
       });
       connection.on("data", (value) => {
-        if (!isPosePacket(value) || !guestConnectionsRef.current.has(connection.peer)) return;
-        const packet: PosePacket = { ...value, playerId: connection.peer };
-        receivePoseRef.current(connection.peer, packet);
-        guestConnectionsRef.current.forEach((other, playerId) => {
-          if (playerId !== connection.peer && other.open) other.send(packet);
+        const view = toDataView(value);
+        const slot = guestSlotsRef.current.get(connection.peer);
+        if (!view || slot === undefined || view.getUint8(0) !== POSE_MESSAGE) return;
+        // Stamp the sender's slot so the relay cannot be spoofed by a guest, then pass
+        // the same buffer straight on: no re-encoding, no re-serialising.
+        view.setUint8(1, slot);
+        receivePoseRef.current(slot, decodePose(view, performance.now()).snapshot);
+        guestConnectionsRef.current.forEach((other, peerId) => {
+          if (peerId !== connection.peer && other.open) other.send(view.buffer);
         });
       });
       connection.on("close", () => {
         if (!guestConnectionsRef.current.delete(connection.peer)) return;
-        removeRemoteRef.current(connection.peer);
-        guestConnectionsRef.current.forEach((other) => {
-          if (other.open) other.send({ type: "leave", playerId: connection.peer } satisfies NetworkPacket);
-        });
-        broadcastCount();
+        const slot = guestSlotsRef.current.get(connection.peer);
+        guestSlotsRef.current.delete(connection.peer);
+        if (slot !== undefined) removeRemoteRef.current(slot);
+        broadcastRoster();
       });
     });
     peer.on("error", (error) => {
@@ -260,18 +336,38 @@ export default function FurryDockersGame() {
     peerRef.current = peer;
     roleRef.current = "guest";
     peer.on("open", () => {
-      const connection = peer.connect(`${PEER_PREFIX}${code.toLowerCase()}`, { reliable: false, serialization: "json" });
+      // Unreliable and unordered: a stale pose is worthless, so retransmitting one only
+      // delays the next. "none" keeps the raw ArrayBuffer intact instead of packing it.
+      const connection = peer.connect(`${PEER_PREFIX}${code.toLowerCase()}`, { reliable: false, serialization: "none" });
       hostConnectionRef.current = connection;
       connection.on("open", () => {
         setNetworkStatus("CONNECTED");
         startPoseTimer();
       });
       connection.on("data", (value) => {
-        const packet = value as NetworkPacket;
-        if (isPosePacket(packet) && packet.playerId && packet.playerId !== peer.id) receivePoseRef.current(packet.playerId, packet);
-        else if (packet?.type === "count") setPlayerCount(packet.count);
-        else if (packet?.type === "leave") removeRemoteRef.current(packet.playerId);
-        else if (packet?.type === "full") {
+        const view = toDataView(value);
+        if (view && view.getUint8(0) === POSE_MESSAGE) {
+          const { slot, snapshot } = decodePose(view, performance.now());
+          if (slot !== localSlotRef.current) receivePoseRef.current(slot, snapshot);
+          return;
+        }
+        if (typeof value !== "string") return;
+        let packet: { type?: string; players?: Record<string, number> };
+        try {
+          packet = JSON.parse(value);
+        } catch {
+          return;
+        }
+        if (packet.type === "roster" && packet.players) {
+          const players = packet.players;
+          const mine = players[peer.id];
+          if (mine !== undefined) localSlotRef.current = mine;
+          setPlayerCount(1 + Object.keys(players).length);
+          // Slot 0 is the host, who is always present.
+          const live = new Set<number>([0, ...Object.values(players)]);
+          live.delete(localSlotRef.current);
+          keepRemotesRef.current(live);
+        } else if (packet.type === "full") {
           roomFullRef.current = true;
           setNetworkStatus("ROOM IS FULL");
           stopPoseTimer();
@@ -401,8 +497,12 @@ export default function FurryDockersGame() {
     const nodeTargets = new Map<string, THREE.Vector3>();
     const boneLinks: BoneLink[] = [];
     const localBones = new Map<string, THREE.Bone>();
-    const latestRemotePoses = new Map<string, PosePacket>();
-    const remoteAvatars = new Map<string, RemoteAvatar>();
+    const remoteAvatars = new Map<number, RemoteAvatar>();
+    const syncBones: Array<THREE.Bone | undefined> = [];
+    const poseBuffer = new ArrayBuffer(POSE_BYTES);
+    const poseView = new DataView(poseBuffer);
+    const scratchQuaternion = new Float32Array(4);
+    let poseClock = 0;
     const bindHipsWorld = new THREE.Vector3(0, 1.8, 0);
     let rigScene: THREE.Group | null = null;
     let remoteTemplate: THREE.Group | null = null;
@@ -539,9 +639,8 @@ ${shader.fragmentShader}`.replace(
       head.updateMatrixWorld(true);
     };
 
-    const removeRemote = (playerId: string) => {
-      latestRemotePoses.delete(playerId);
-      const avatar = remoteAvatars.get(playerId);
+    const removeRemote = (slot: number) => {
+      const avatar = remoteAvatars.get(slot);
       if (!avatar) return;
       avatar.container.traverse((object) => {
         if (!(object instanceof THREE.SkinnedMesh)) return;
@@ -549,22 +648,34 @@ ${shader.fragmentShader}`.replace(
         materials.forEach((material) => material.dispose());
       });
       scene.remove(avatar.container);
-      remoteAvatars.delete(playerId);
+      remoteAvatars.delete(slot);
     };
-    receivePoseRef.current = (playerId, pose) => latestRemotePoses.set(playerId, pose);
+    receivePoseRef.current = (slot, snapshot) => {
+      const avatar = remoteAvatars.get(slot) ?? createRemoteAvatar(slot, snapshot);
+      if (!avatar) return;
+      // Unreliable delivery means packets can arrive out of order; a snapshot older than
+      // the newest one held is simply dropped rather than rewinding the avatar.
+      const newest = avatar.snapshots[avatar.snapshots.length - 1];
+      if (newest && snapshot.time <= newest.time) return;
+      avatar.snapshots.push(snapshot);
+      if (avatar.snapshots.length > SNAPSHOT_LIMIT) avatar.snapshots.shift();
+    };
     removeRemoteRef.current = removeRemote;
+    keepRemotesRef.current = (slots) => {
+      Array.from(remoteAvatars.keys()).forEach((slot) => {
+        if (!slots.has(slot)) removeRemote(slot);
+      });
+    };
     clearRemotesRef.current = () => Array.from(remoteAvatars.keys()).forEach(removeRemote);
 
-    const createRemoteAvatar = (playerId: string, pose: PosePacket) => {
+    const createRemoteAvatar = (slot: number, snapshot: Snapshot) => {
       if (!remoteTemplate) return null;
       const container = new THREE.Group();
       const clone = cloneSkeleton(remoteTemplate) as THREE.Group;
-      let hash = 0;
-      for (const character of playerId) hash = (hash * 31 + character.charCodeAt(0)) | 0;
-      const playerColor = new THREE.Color().setHSL(Math.abs(hash % 360) / 360, 0.68, 0.56);
-      const bones = new Map<string, THREE.Bone>();
+      const playerColor = new THREE.Color().setHSL(((slot * 97) % 360) / 360, 0.68, 0.56);
+      const byName = new Map<string, THREE.Bone>();
       clone.traverse((object) => {
-        if (object instanceof THREE.Bone) bones.set(object.name, object);
+        if (object instanceof THREE.Bone) byName.set(object.name, object);
         if (!(object instanceof THREE.SkinnedMesh)) return;
         object.castShadow = true;
         object.receiveShadow = true;
@@ -577,11 +688,15 @@ ${shader.fragmentShader}`.replace(
         object.material = Array.isArray(object.material) ? object.material.map(tintMaterial) : tintMaterial(object.material);
       });
       container.add(clone);
-      container.position.fromArray(pose.position);
-      container.rotation.y = pose.yaw;
+      container.position.set(snapshot.x, snapshot.y, snapshot.z);
+      container.rotation.y = snapshot.yaw;
       scene.add(container);
-      const avatar = { container, bones };
-      remoteAvatars.set(playerId, avatar);
+      const avatar: RemoteAvatar = {
+        container,
+        bones: SYNC_BONES.map((name) => byName.get(name)),
+        snapshots: [],
+      };
+      remoteAvatars.set(slot, avatar);
       return avatar;
     };
 
@@ -1144,24 +1259,60 @@ ${shader.fragmentShader}`.replace(
           link.bone.updateMatrixWorld(true);
         }
 
-        localPoseRef.current = {
-          type: "pose",
-          position: rigContainer.position.toArray() as [number, number, number],
-          yaw: rigContainer.rotation.y,
-          bones: Array.from(localBones, ([name, bone]) => [name, bone.quaternion.x, bone.quaternion.y, bone.quaternion.z, bone.quaternion.w]),
-        };
+        if (!syncBones.length) SYNC_BONES.forEach((name) => syncBones.push(localBones.get(name)));
+
+        // Sent from the render loop rather than a timer. setInterval is clamped to once
+        // a second in a background tab, which on its own turns a 15 Hz stream into the
+        // one-second teleporting the old build showed when two clients shared a window.
+        poseClock += dt;
+        if (poseClock >= 1 / POSE_SEND_HZ) {
+          poseClock = 0;
+          const role = roleRef.current;
+          if (role !== "solo") {
+            encodePose(poseView, localSlotRef.current, rigContainer.position, rigContainer.rotation.y, syncBones);
+            if (role === "host") {
+              guestConnectionsRef.current.forEach((connection) => {
+                if (connection.open) connection.send(poseBuffer);
+              });
+            } else if (hostConnectionRef.current?.open) {
+              hostConnectionRef.current.send(poseBuffer);
+            }
+          }
+        }
       }
 
-      const remoteBlend = 1 - Math.exp(-12 * dt);
-      latestRemotePoses.forEach((pose, playerId) => {
-        const avatar = remoteAvatars.get(playerId) ?? createRemoteAvatar(playerId, pose);
-        if (!avatar) return;
-        avatar.container.position.lerp(new THREE.Vector3().fromArray(pose.position), remoteBlend);
-        const yawDifference = Math.atan2(Math.sin(pose.yaw - avatar.container.rotation.y), Math.cos(pose.yaw - avatar.container.rotation.y));
-        avatar.container.rotation.y += yawDifference * remoteBlend;
-        pose.bones.forEach(([name, x, y, z, w]) => {
-          avatar.bones.get(name)?.quaternion.slerp(new THREE.Quaternion(x, y, z, w), remoteBlend);
-        });
+      // Play remote avatars back on a delay, interpolating between the two snapshots
+      // that straddle the render time. Motion then comes from the buffer rather than
+      // from packet arrival, so an uneven stream still reads as continuous movement.
+      const renderTime = now - INTERP_DELAY_MS;
+      remoteAvatars.forEach((avatar) => {
+        const frames = avatar.snapshots;
+        if (!frames.length) return;
+        while (frames.length > 2 && frames[1].time <= renderTime) frames.shift();
+        const from = frames[0];
+        const to = frames.length > 1 ? frames[1] : null;
+        const span = to ? to.time - from.time : 0;
+        const alpha = to && span > 0 ? THREE.MathUtils.clamp((renderTime - from.time) / span, 0, 1) : 0;
+        const target = to ?? from;
+        avatar.container.position.set(
+          THREE.MathUtils.lerp(from.x, target.x, alpha),
+          THREE.MathUtils.lerp(from.y, target.y, alpha),
+          THREE.MathUtils.lerp(from.z, target.z, alpha),
+        );
+        const yawGap = Math.atan2(Math.sin(target.yaw - from.yaw), Math.cos(target.yaw - from.yaw));
+        avatar.container.rotation.y = from.yaw + yawGap * alpha;
+        for (let index = 0; index < avatar.bones.length; index += 1) {
+          const bone = avatar.bones[index];
+          if (!bone) continue;
+          // slerpFlat is typed for number[] but reads any indexable buffer.
+          THREE.Quaternion.slerpFlat(
+            scratchQuaternion as unknown as number[], 0,
+            from.quaternions as unknown as number[], index * 4,
+            target.quaternions as unknown as number[], index * 4,
+            alpha,
+          );
+          bone.quaternion.set(scratchQuaternion[0], scratchQuaternion[1], scratchQuaternion[2], scratchQuaternion[3]);
+        }
       });
 
       applyBodyMask(settings.body);
@@ -1234,9 +1385,9 @@ ${shader.fragmentShader}`.replace(
       if (document.pointerLockElement === renderer.domElement) document.exitPointerLock();
       toggleViewRef.current = () => undefined;
       requestLookRef.current = () => undefined;
-      localPoseRef.current = null;
       receivePoseRef.current = () => undefined;
       removeRemoteRef.current = () => undefined;
+      keepRemotesRef.current = () => undefined;
       clearRemotesRef.current = () => undefined;
       Array.from(remoteAvatars.keys()).forEach(removeRemote);
       renderer.dispose();

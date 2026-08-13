@@ -151,4 +151,50 @@ a hand bone inherits all of this for free.
 - Share the code with up to seven other players.
 - Other players enter the code and select **Join**.
 
+### What goes over the wire
+
+The pose stream used to be JSON: every one of the 34 bones, each tagged with its full name
+(`"mixamorig:RightHandIndex2"`) and four full-precision floats, at 15 Hz. That is 3,694
+bytes a packet. With the host relaying every guest to every other guest, eight players cost
+the host **21.7 Mbps of upload** — far past any home connection, so the channel simply
+backed up and delivered in bursts. That is what the teleporting was.
+
+It is now a 152-byte binary packet, **24.3x smaller**, putting the same room at 0.89 Mbps:
+
+- Only the 17 bones the ragdoll actually rotates are sent. Fingers and toes never move, so
+  they were pure waste.
+- Bone names are gone. Both ends share `SYNC_BONES`, so position in the packet is identity.
+- Quaternion components are quantised to int16. Worst-case error over 20,000 randomised
+  round trips is 1.5e-5 per component, under 0.85° of bone rotation and 0.003° of yaw.
+- The channel is unreliable and unordered: a stale pose is worthless, so retransmitting one
+  only delays the next. Serialization is `none`, so the raw `ArrayBuffer` goes out without
+  being packed again.
+- The host relays a guest's buffer without re-encoding it, stamping the sender's slot so a
+  guest cannot claim to be someone else.
+
+### Why it looked like teleporting
+
+Two things, and the second one bites during testing. Packets were sent from a
+`setInterval`, and browsers clamp timers in a background tab to once a second — so two
+clients sharing one window produce exactly the one-second jumps, whatever the bandwidth.
+Sending now happens from the render loop instead. Note that a hidden tab is throttled at
+the animation frame too, so **test with two side-by-side windows, not two tabs**.
+
+Remote avatars are also played back on a 130 ms delay, interpolating between the two
+snapshots that straddle the render time (Valve's entity interpolation). Motion comes from
+the buffer rather than from packet arrival, so an uneven stream still reads as continuous
+movement instead of a jump to each newly arrived pose.
+
+### Is there a better transport?
+
+Not really, in a browser. PeerJS is a thin wrapper over WebRTC data channels, which is the
+only peer-to-peer transport available; the wins come from what you put on it, not from
+replacing it. Two things could still be taken further:
+
+- **A full mesh instead of a host relay.** Every peer sending straight to every other cuts
+  the host's upload from 0.89 Mbps to about 0.13 Mbps each and removes the relay hop from
+  the latency, at the cost of more connections to manage.
+- **An authoritative server**, say a Cloudflare Durable Object per room, which would fix
+  host-migration and cheating properly — but it means giving up plain static hosting.
+
 Open `index.html` through the eeproj GitHub Pages site to play. Editable React/TypeScript source is in `source/`.
