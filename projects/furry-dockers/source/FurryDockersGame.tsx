@@ -71,6 +71,12 @@ const SHOULDER_BONES = /Shoulder/;
 // everything you can actually see of yourself, which just reinvents ARMS ONLY.
 const BODY_FADE_NEAR = 0.3;
 const BODY_FADE_FAR = 1.1;
+// The eye sits inside the collar, so without this the near plane slices the mesh and
+// leaves a hard cut edge across the view. Every first-person mode dissolves whatever
+// comes this close, so geometry is gone before it can reach the near plane at 0.06.
+// This is the camera-proximity fade true-first-person games run all the time.
+const NEAR_GUARD_NEAR = 0.09;
+const NEAR_GUARD_FAR = 0.42;
 // The muscle targets are a spring's input, not a display pose: `acceleration` is a raw
 // per-frame finite difference and the walk curves have corners in them. The ragdoll used
 // to smooth all of that on the way to the screen, so blending it out has to put an
@@ -433,6 +439,9 @@ export default function FurryDockersGame() {
     const boneHardUniform = { value: new Float32Array(1) };
     const boneFeatherUniform = { value: new Float32Array(1) };
     const bodyFadeUniform = { value: new THREE.Vector2(BODY_FADE_NEAR, BODY_FADE_FAR) };
+    // Negative bounds park the guard off: smoothstep then returns 1 for any real
+    // distance, so nothing is dissolved while the top-down camera is active.
+    const nearGuardUniform = { value: new THREE.Vector2(-2, -1) };
 
     const installBoneMask = (meshes: THREE.SkinnedMesh[]) => {
       const skeletonBones = meshes[0]?.skeleton.bones ?? [];
@@ -449,6 +458,7 @@ export default function FurryDockersGame() {
           shader.uniforms.boneHard = boneHardUniform;
           shader.uniforms.boneFeather = boneFeatherUniform;
           shader.uniforms.bodyFade = bodyFadeUniform;
+          shader.uniforms.nearGuard = nearGuardUniform;
           shader.vertexShader = `uniform float boneHard[${size}];
 uniform float boneFeather[${size}];
 varying float vHardHide;
@@ -469,6 +479,7 @@ ${shader.vertexShader}`
                vEyeDistance = length(mvPosition.xyz);`,
             );
           shader.fragmentShader = `uniform vec2 bodyFade;
+uniform vec2 nearGuard;
 varying float vHardHide;
 varying float vFeatherHide;
 varying float vEyeDistance;
@@ -476,7 +487,10 @@ ${shader.fragmentShader}`.replace(
             "#include <clipping_planes_fragment>",
             `#include <clipping_planes_fragment>
              float nearness = 1.0 - smoothstep(bodyFade.x, bodyFade.y, vEyeDistance);
-             float hide = clamp(vHardHide + vFeatherHide * nearness, 0.0, 1.0);
+             // Applies to every bone, so nothing can survive close enough to be
+             // sliced by the near plane, whichever body mode is selected.
+             float guard = 1.0 - smoothstep(nearGuard.x, nearGuard.y, vEyeDistance);
+             float hide = clamp(vHardHide + vFeatherHide * nearness + guard, 0.0, 1.0);
              if (hide > 0.001) {
                float ign = fract(52.9829189 * fract(0.06711056 * gl_FragCoord.x + 0.00583715 * gl_FragCoord.y));
                if (ign < hide) discard;
@@ -495,6 +509,8 @@ ${shader.fragmentShader}`.replace(
     const applyBodyMask = (mode: BodyView) => {
       if (!boneHardValues || !boneFeatherValues) return;
       const active = firstPersonMode ? mode : "full";
+      if (firstPersonMode) nearGuardUniform.value.set(NEAR_GUARD_NEAR, NEAR_GUARD_FAR);
+      else nearGuardUniform.value.set(-2, -1);
       for (let index = 0; index < boneHardValues.length; index += 1) {
         const isArm = armBoneFlags[index];
         const isShoulder = shoulderBoneFlags[index];

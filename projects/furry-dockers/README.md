@@ -60,6 +60,14 @@ dissolve is a dithered discard driven by interleaved gradient noise, so it costs
 transparency sorting. A vertex sitting on a seam picks up a mix of both channels through
 its skin weights, which is what softens an edge instead of cutting it.
 
+On top of both, a **near-camera guard** runs in every first-person mode. The eye sits
+inside the collar, so without it the near plane slices straight through the mesh and leaves
+a hard cut edge across the view — no amount of mask feathering helps, because a near-plane
+cut is a hard edge by definition. The guard dissolves anything within 0.09–0.42 units, so
+geometry is gone before it can reach the near plane at 0.06. Measured: the closest
+surviving body fragment sits at 0.094 looking down and 0.188 looking level, where
+previously geometry reached 0.06 — exactly the near plane, which is what was being cut.
+
 - `ARMS ONLY` hard-hides the body but *feathers the shoulders*, so the arms dissolve away
   at the top rather than ending on a cut edge.
 - `SOFT FADE` feathers the whole body instead of hard-hiding it.
