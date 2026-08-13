@@ -167,8 +167,11 @@ It is now a 152-byte binary packet, **24.3x smaller**, putting the same room at 
 - Quaternion components are quantised to int16. Worst-case error over 20,000 randomised
   round trips is 1.5e-5 per component, under 0.85° of bone rotation and 0.003° of yaw.
 - The channel is unreliable and unordered: a stale pose is worthless, so retransmitting one
-  only delays the next. Serialization is `none`, so the raw `ArrayBuffer` goes out without
-  being packed again.
+  only delays the next. Serialization is `raw`, PeerJS's pass-through serializer, so the
+  `ArrayBuffer` reaches the data channel untouched. Mind the name: the enum member is
+  `SerializationType.None` but its string value is `"raw"`, and `"raw"` is the key actually
+  registered. Passing `"none"` throws inside `connect()` before a connection object exists,
+  which strands the join with no error and no state change.
 - The host relays a guest's buffer without re-encoding it, stamping the sender's slot so a
   guest cannot claim to be someone else.
 

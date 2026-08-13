@@ -337,10 +337,27 @@ export default function FurryDockersGame() {
     roleRef.current = "guest";
     peer.on("open", () => {
       // Unreliable and unordered: a stale pose is worthless, so retransmitting one only
-      // delays the next. "none" keeps the raw ArrayBuffer intact instead of packing it.
-      const connection = peer.connect(`${PEER_PREFIX}${code.toLowerCase()}`, { reliable: false, serialization: "none" });
+      // delays the next. "raw" is PeerJS's pass-through serializer — it hands the
+      // ArrayBuffer to the data channel untouched. Note the option key is "raw" even
+      // though the enum member is SerializationType.None; "none" is not registered, and
+      // passing it throws inside connect() before a connection object ever exists.
+      let connection: DataConnection;
+      try {
+        connection = peer.connect(`${PEER_PREFIX}${code.toLowerCase()}`, { reliable: false, serialization: "raw" });
+      } catch {
+        setNetworkStatus("COULD NOT START CONNECTION");
+        return;
+      }
       hostConnectionRef.current = connection;
+      // Without this a failed handshake leaves the panel reading JOINING for ever.
+      const joinTimeout = window.setTimeout(() => {
+        if (!connection.open) {
+          setNetworkStatus("NO ANSWER — CHECK THE CODE");
+          connection.close();
+        }
+      }, 12000);
       connection.on("open", () => {
+        window.clearTimeout(joinTimeout);
         setNetworkStatus("CONNECTED");
         startPoseTimer();
       });
@@ -375,10 +392,14 @@ export default function FurryDockersGame() {
         }
       });
       connection.on("close", () => {
-        if (!roomFullRef.current) setNetworkStatus("HOST DISCONNECTED");
+        window.clearTimeout(joinTimeout);
+        if (!roomFullRef.current) setNetworkStatus(connection.open ? "HOST DISCONNECTED" : "COULD NOT REACH THE HOST");
         stopPoseTimer();
       });
-      connection.on("error", () => setNetworkStatus("COULD NOT JOIN ROOM"));
+      connection.on("error", () => {
+        window.clearTimeout(joinTimeout);
+        setNetworkStatus("COULD NOT JOIN ROOM");
+      });
     });
     peer.on("error", () => {
       setNetworkStatus("ROOM NOT FOUND");
