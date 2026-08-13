@@ -47,11 +47,16 @@ type ComfortSettings = {
 const MAX_PLAYERS = 8;
 const PEER_PREFIX = "furry-dockers-";
 const ROOM_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+const WORLD_GRAVITY = 18;
 const TOP_DOWN_FOV = 47;
 const MAX_PITCH = 1.45;
 const EYE_FORWARD = 0.16;
 const EYE_RISE = 0.26;
 const EYE_DRIFT = 0.05;
+// Where a raised hand should sit on screen, in normalized device coordinates
+// (0,0 is the crosshair, ±1 is the screen edge). Mirrored for the left hand.
+const HAND_SCREEN_X = 0.46;
+const HAND_SCREEN_Y = -0.4;
 const DEFAULT_COMFORT: ComfortSettings = { fov: 78, sensitivity: 1, invertY: false, vignette: true, showBody: true };
 
 function makeRoomCode() {
@@ -72,13 +77,16 @@ function isPosePacket(value: unknown): value is PosePacket {
   return packet.type === "pose" && Array.isArray(packet.position) && typeof packet.yaw === "number" && Array.isArray(packet.bones);
 }
 
-function applyMuscle(node: RagdollNode, target: THREE.Vector3, strengthScale = 1) {
+function applyMuscle(node: RagdollNode, target: THREE.Vector3, strengthScale = 1, gravityAssist = 0) {
   const body = node.body;
   const force = new CANNON.Vec3(
     ((target.x - body.position.x) * node.muscle - body.velocity.x * node.damping) * strengthScale,
     ((target.y - body.position.y) * node.muscle - body.velocity.y * node.damping) * strengthScale,
     ((target.z - body.position.z) * node.muscle - body.velocity.z * node.damping) * strengthScale,
   );
+  // Feeding weight forward cancels the steady-state droop without stiffening the
+  // spring, so a held pose sits on its mark and still wobbles when knocked.
+  force.y += body.mass * WORLD_GRAVITY * gravityAssist;
   const magnitude = force.length();
   if (magnitude > 560) force.scale(560 / magnitude, force);
   body.applyForce(force);
@@ -292,7 +300,7 @@ export default function FurryDockersGame() {
     sun.shadow.camera.bottom = -20;
     scene.add(sun);
 
-    const physicsWorld = new CANNON.World({ gravity: new CANNON.Vec3(0, -18, 0) });
+    const physicsWorld = new CANNON.World({ gravity: new CANNON.Vec3(0, -WORLD_GRAVITY, 0) });
     physicsWorld.broadphase = new CANNON.SAPBroadphase(physicsWorld);
     (physicsWorld.solver as CANNON.GSSolver).iterations = 18;
     physicsWorld.allowSleep = false;
@@ -830,12 +838,54 @@ export default function FurryDockersGame() {
           )
         : facing;
 
+      // The eye is resolved before the muscles run so the hands can be aimed at a spot
+      // on this frame's screen rather than at where the view was a frame ago.
+      if (firstPersonView) {
+        const headBodyY = ragdollNodes.get("mixamorig:Head")?.body.position.y;
+        if (headBodyY !== undefined) {
+          // Pinned to where the ragdoll's head actually settles, but it may only creep
+          // there at EYE_DRIFT units/second — too slow to read as bob.
+          const eyeTarget = headBodyY + EYE_RISE;
+          if (snapEyeHeight) eyeHeight = eyeTarget;
+          else eyeHeight += THREE.MathUtils.clamp(eyeTarget - eyeHeight, -EYE_DRIFT * dt, EYE_DRIFT * dt);
+        }
+        snapEyeHeight = false;
+      }
+      // The eye rides the smooth kinematic root: no walk bob, no landing dip, no roll,
+      // and none of the ragdoll's jitter reaches the view.
+      const eyePosition = new THREE.Vector3(root.x, eyeHeight, root.z).addScaledVector(lookForward, EYE_FORWARD);
+
+      // A viewmodel anchor. Every point on the ray from the eye through a given screen
+      // position projects to that same spot, so instead of picking one point on it and
+      // clamping into the shoulder's reach — which drags the hand off the mark — this
+      // intersects the ray with the sphere the arm can reach and takes the far hit. The
+      // hand then holds its place in frame and only its depth gives, at any FOV, aspect
+      // or pitch. When the ray passes beyond reach entirely it falls back to the closest
+      // approach, putting the hand as near the mark as the arm allows.
+      const viewAnchor = (screenX: number, screenY: number, shoulder: THREE.Vector3, maxReach: number) => {
+        const tanHalfFov = Math.tan(THREE.MathUtils.degToRad(settings.fov) * 0.5);
+        const viewUp = lookRight.clone().cross(reachDirection);
+        const ray = reachDirection.clone()
+          .addScaledVector(lookRight, screenX * tanHalfFov * camera.aspect)
+          .addScaledVector(viewUp, screenY * tanHalfFov)
+          .normalize();
+        const toShoulder = shoulder.clone().sub(eyePosition);
+        const along = toShoulder.dot(ray);
+        const offRaySq = Math.max(toShoulder.lengthSq() - along * along, 0);
+        const reachSq = maxReach * maxReach;
+        const depth = offRaySq <= reachSq ? along + Math.sqrt(reachSq - offRaySq) : along;
+        const fromShoulder = eyePosition.clone().addScaledVector(ray, Math.max(depth, 0.05)).sub(shoulder);
+        const distance = Math.max(fromShoulder.length(), 0.0001);
+        return { direction: fromShoulder.divideScalar(distance), distance: Math.min(distance, maxReach) };
+      };
+
       ragdollNodes.forEach((node) => {
         const target = node.bindOffset.clone().applyQuaternion(yaw).add(hipTarget);
         const leftSide = node.name.includes("Left");
         const rightSide = node.name.includes("Right");
         const isArm = /Shoulder|Arm|ForeArm|Hand/.test(node.name);
         let muscleScale = 1;
+        let gravityAssist = 0;
         if (isArm) {
           const sideName = leftSide ? "Left" : "Right";
           const armNode = ragdollNodes.get(`mixamorig:${sideName}Arm`);
@@ -845,11 +895,20 @@ export default function FurryDockersGame() {
           if (armNode && forearmNode && /ForeArm|Hand/.test(node.name)) {
             const armTarget = armNode.bindOffset.clone().applyQuaternion(yaw).add(hipTarget);
             const upperArmLength = armNode.bindOffset.distanceTo(forearmNode.bindOffset);
-            if (reaching) {
+            if (reaching && firstPersonView) {
+              const lowerArmLength = handNode ? forearmNode.bindOffset.distanceTo(handNode.bindOffset) : 0;
+              const fullReach = (upperArmLength + lowerArmLength) * 0.97;
+              const aim = viewAnchor(leftSide ? -HAND_SCREEN_X : HAND_SCREEN_X, HAND_SCREEN_Y, armTarget, fullReach);
+              // Both bones aim down the same line, so the whole arm points at the mark.
+              const along = /Hand/.test(node.name) ? aim.distance : Math.min(upperArmLength, aim.distance);
+              target.copy(armTarget).addScaledVector(aim.direction, along);
+              muscleScale = /Hand/.test(node.name) ? 0.62 : 0.7;
+              gravityAssist = 1;
+            } else if (reaching) {
               const lowerArmLength = handNode ? forearmNode.bindOffset.distanceTo(handNode.bindOffset) : 0;
               const reachLength = /Hand/.test(node.name) ? upperArmLength + lowerArmLength : upperArmLength;
               target.copy(armTarget).addScaledVector(reachDirection, reachLength * 0.92);
-              target.y -= firstPersonView ? 0.06 : 0.12 + reachLength * 0.08;
+              target.y -= 0.12 + reachLength * 0.08;
               muscleScale = /Hand/.test(node.name) ? 0.48 : 0.58;
             } else {
               target.copy(armTarget).add(new THREE.Vector3(0, -upperArmLength, 0));
@@ -869,7 +928,7 @@ export default function FurryDockersGame() {
           target.y += rightLift * 0.42 * speedRatio * (/Foot|Toe/.test(node.name) ? 1 : 0.55);
         }
         if (/Spine2|Neck|Head/.test(node.name)) target.addScaledVector(acceleration, -0.0035);
-        applyMuscle(node, target, muscleScale);
+        applyMuscle(node, target, muscleScale, gravityAssist);
       });
 
       physicsWorld.step(1 / 60, dt, 4);
@@ -934,19 +993,7 @@ export default function FurryDockersGame() {
 
       if (firstPersonView) {
         if (rigScene) rigScene.visible = settings.showBody;
-        // The eye height is pinned to where the ragdoll's head actually settles, but it
-        // may only creep there at EYE_DRIFT units/second — fast enough to survive a
-        // posture change, far too slow to read as bob.
-        const headBodyY = ragdollNodes.get("mixamorig:Head")?.body.position.y;
-        if (headBodyY !== undefined) {
-          const eyeTarget = headBodyY + EYE_RISE;
-          if (snapEyeHeight) eyeHeight = eyeTarget;
-          else eyeHeight += THREE.MathUtils.clamp(eyeTarget - eyeHeight, -EYE_DRIFT * dt, EYE_DRIFT * dt);
-        }
-        snapEyeHeight = false;
-        // The eye rides the smooth kinematic root: no walk bob, no landing dip, no
-        // roll, and none of the ragdoll's jitter reaches the view.
-        camera.position.set(root.x, eyeHeight, root.z).addScaledVector(lookForward, EYE_FORWARD);
+        camera.position.copy(eyePosition);
         camera.rotation.set(look.pitch, look.yaw + Math.PI, 0, "YXZ");
       } else {
         const cameraTarget = root.clone().add(new THREE.Vector3(0, 1.15, 0));

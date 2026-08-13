@@ -33,7 +33,37 @@ The view is built for people who get motion sick:
   up when you stop. Toggle it off if you don't want it.
 - **Adjustable FOV and sensitivity**, invert Y, and a body-visibility toggle, all in the
   VIEW panel.
-- Arms punch along the aim ray, pitch included, so your hands land where the crosshair is.
+- **Hands stay in frame.** A raised hand is aimed at a fixed spot on screen rather than at
+  a world-space ray from the shoulder, so looking up or down carries it along instead of
+  swinging it out of view. See below.
+
+## Keeping hands and held items on screen
+
+Most first-person games never show you the real arms. They render a separate *viewmodel*
+rig parented straight to the camera, in its own pass with its own FOV and a cleared depth
+buffer, so it is always in frame and never clips into walls. What other players see is a
+different model entirely.
+
+That trick would throw away the point of this game, which is that the arms are floppy
+physics bodies. Instead the arms stay physical and only their *target* moves into view
+space:
+
+- Each raised hand is given a screen position in normalized device coordinates
+  (`HAND_SCREEN_X` / `HAND_SCREEN_Y`), not a world offset from the shoulder.
+- Every point on the ray from the eye through that screen position projects to the same
+  spot, so the target is found by intersecting that ray with the sphere the arm can reach
+  and taking the far hit. The hand holds its place in frame and only its *depth* gives.
+- If the ray passes entirely beyond reach, it falls back to the ray's closest approach, so
+  the hand sits as near the mark as the arm allows rather than dropping out of view.
+- Because the ray is built from the live FOV and aspect, the hand holds the same screen
+  position at any FOV or window shape — the same reason games render viewmodels at a fixed
+  FOV of their own.
+- Weight is fed forward into the muscle so a held pose sits on its mark without the spring
+  being stiffened, keeping the wobble.
+
+Measured across the full pitch range (straight up to straight down) both hands stay within
+x ±0.48–0.76 and y −0.27 to −0.57 in NDC, where ±1 is the screen edge. An item parented to
+a hand bone inherits all of this for free.
 
 ## Multiplayer
 
