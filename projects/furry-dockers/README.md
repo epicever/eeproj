@@ -31,11 +31,57 @@ The view is built for people who get motion sick:
   very different viewpoints is exactly the motion that makes people ill.
 - **Dynamic tunnel vignette** that closes in while you move or turn quickly, and opens back
   up when you stop. Toggle it off if you don't want it.
-- **Adjustable FOV and sensitivity**, invert Y, and a body-visibility toggle, all in the
-  VIEW panel.
+- **Adjustable FOV and sensitivity**, invert Y, body visibility, and body steadiness, all
+  in the VIEW panel.
 - **Hands stay in frame.** A raised hand is aimed at a fixed spot on screen rather than at
   a world-space ray from the shoulder, so looking up or down carries it along instead of
   swinging it out of view. See below.
+
+## Two answers to the wobbling headless body
+
+Seeing your own decapitated torso lurch around while you dash back and forward is the
+classic problem with putting a camera inside a physics character. Both standard fixes are
+implemented and switchable in the VIEW panel, so they can be compared directly. Defaults
+are `FULL BODY` and `STEADY 0%`, which is the original behaviour.
+
+### 1. `ARMS ONLY` — the viewmodel answer
+
+What Quake, Half-Life and Counter-Strike do: show the arms and nothing else. Because the
+whole character is one skinned mesh, and because the arms hang off the spine (so scaling
+the spine bone away would take the arms with it), this uses a **per-bone visibility mask**
+in the skinning shader. The vertex stage sums a per-bone mask over each vertex's four bone
+influences, and the fragment stage discards anything more than half hidden — the usual way
+to carve a viewmodel out of a shared mesh. `NO BODY` masks the arms too.
+
+The shadow pass is deliberately left unpatched, so a hidden body still casts its full
+silhouette on the ground. Measured looking straight down, `ARMS ONLY` changes 78% of the
+frame versus `FULL BODY`, while the character's own cast shadow still accounts for 11% of
+the frame with the body fully masked.
+
+- **Good:** no headless torso, nothing can lurch into the camera, arms read clearly.
+- **Costs:** looking down shows floor rather than a body, which is less grounded. Your
+  shadow still has a head and a body, which is either a nice cue or a giveaway.
+
+### 2. `STEADY` — the partial-ragdoll answer
+
+What Unreal and Unity call **physics blend weight**: keep the whole body, run the
+simulation untouched, and only pull the pose that gets skinned back toward what the muscles
+were asking for. At 0% the body is pure physics; at 100% it follows the walk intent almost
+exactly. Blending toward the muscle target rather than toward the bind pose is what keeps
+the legs stepping instead of going rigid.
+
+Measured while dashing back and forward, torso sway (RMS deviation of the chest relative to
+the character root) falls from 0.46 at 0%, to 0.24 at 50%, to 0.019 at 100% — a 96%
+reduction. The foot still lifts 0.216 units per stride at 100%, so the walk survives.
+
+- **Good:** keeps a real body under you, so looking down still shows a character.
+- **Costs:** the higher you push it, the less this reads as a floppy ragdoll game. It also
+  applies only in first person and is reflected in the pose sent to other players, so
+  switching views changes how loose you look to everyone — the same way engines blend
+  physics per character rather than per viewer.
+
+The two combine: `FULL BODY` with `STEADY` around 40–60% keeps a visible body while taking
+out most of the lurch.
 
 ## Keeping hands and held items on screen
 

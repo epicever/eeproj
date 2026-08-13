@@ -36,12 +36,14 @@ type RemoteAvatar = {
   container: THREE.Group;
   bones: Map<string, THREE.Bone>;
 };
+type BodyView = "full" | "arms" | "hidden";
 type ComfortSettings = {
   fov: number;
   sensitivity: number;
   invertY: boolean;
   vignette: boolean;
-  showBody: boolean;
+  body: BodyView;
+  steady: number;
 };
 
 const MAX_PLAYERS = 8;
@@ -57,7 +59,10 @@ const EYE_DRIFT = 0.05;
 // (0,0 is the crosshair, ±1 is the screen edge). Mirrored for the left hand.
 const HAND_SCREEN_X = 0.46;
 const HAND_SCREEN_Y = -0.4;
-const DEFAULT_COMFORT: ComfortSettings = { fov: 78, sensitivity: 1, invertY: false, vignette: true, showBody: true };
+const DEFAULT_COMFORT: ComfortSettings = { fov: 78, sensitivity: 1, invertY: false, vignette: true, body: "full", steady: 0 };
+// Bones that make up the first-person "viewmodel": everything else can be masked
+// away without taking the arms with it.
+const ARM_BONES = /Shoulder|Arm|Hand|Thumb|Index|Middle|Ring|Pinky/;
 
 function makeRoomCode() {
   const values = crypto.getRandomValues(new Uint8Array(4));
@@ -373,6 +378,7 @@ export default function FurryDockersGame() {
     const rigContainer = new THREE.Group();
     scene.add(rigContainer);
     const ragdollNodes = new Map<string, RagdollNode>();
+    const nodeTargets = new Map<string, THREE.Vector3>();
     const boneLinks: BoneLink[] = [];
     const localBones = new Map<string, THREE.Bone>();
     const latestRemotePoses = new Map<string, PosePacket>();
@@ -392,6 +398,56 @@ export default function FurryDockersGame() {
     let previousLookYaw = look.yaw;
     let vignetteStrength = 0;
     let snapTopDownCamera = false;
+
+    // A per-bone visibility mask, the usual way to carve a first-person viewmodel out
+    // of a character that shares one skinned mesh: the skinning shader sums the mask
+    // over each vertex's bone influences and the fragment stage discards whatever is
+    // mostly hidden. Bone scaling cannot do this job, because the arms hang off the
+    // spine and would collapse with it. The shadow pass is deliberately left unpatched,
+    // so a hidden body still casts its full silhouette on the ground.
+    let boneMaskValues: Float32Array<ArrayBuffer> | null = null;
+    let armBoneFlags: boolean[] = [];
+    const boneMaskUniform = { value: new Float32Array(1) };
+
+    const installBoneMask = (meshes: THREE.SkinnedMesh[]) => {
+      const skeletonBones = meshes[0]?.skeleton.bones ?? [];
+      if (!skeletonBones.length) return;
+      boneMaskValues = new Float32Array(skeletonBones.length);
+      boneMaskUniform.value = boneMaskValues;
+      armBoneFlags = skeletonBones.map((bone) => ARM_BONES.test(bone.name));
+      const size = skeletonBones.length;
+      const patch = (material: THREE.Material) => {
+        material.onBeforeCompile = (shader) => {
+          shader.uniforms.boneMask = boneMaskUniform;
+          shader.vertexShader = `uniform float boneMask[${size}];\nvarying float vBoneMask;\n${shader.vertexShader}`.replace(
+            "#include <skinning_vertex>",
+            `#include <skinning_vertex>
+             vBoneMask = boneMask[int(skinIndex.x)] * skinWeight.x + boneMask[int(skinIndex.y)] * skinWeight.y
+                       + boneMask[int(skinIndex.z)] * skinWeight.z + boneMask[int(skinIndex.w)] * skinWeight.w;`,
+          );
+          shader.fragmentShader = `varying float vBoneMask;\n${shader.fragmentShader}`.replace(
+            "#include <clipping_planes_fragment>",
+            `#include <clipping_planes_fragment>
+             if (vBoneMask > 0.5) discard;`,
+          );
+        };
+        material.customProgramCacheKey = () => "furry-dockers-bone-mask";
+        material.needsUpdate = true;
+      };
+      meshes.forEach((mesh) => {
+        if (Array.isArray(mesh.material)) mesh.material.forEach(patch);
+        else patch(mesh.material);
+      });
+    };
+
+    const applyBodyMask = (mode: BodyView) => {
+      if (!boneMaskValues) return;
+      const hideEverything = firstPersonMode && mode === "hidden";
+      const armsOnly = firstPersonMode && mode === "arms";
+      for (let index = 0; index < boneMaskValues.length; index += 1) {
+        boneMaskValues[index] = hideEverything || (armsOnly && !armBoneFlags[index]) ? 1 : 0;
+      }
+    };
 
     // Collapsing the head bone keeps the local skull (and anything parented to it)
     // out of the near plane instead of letting it clip across the whole view.
@@ -469,11 +525,13 @@ export default function FurryDockersGame() {
         rigScene.updateMatrixWorld(true);
         const bones = localBones;
         bones.clear();
+        const skinnedMeshes: THREE.SkinnedMesh[] = [];
         rigScene.traverse((object) => {
           if (object instanceof THREE.SkinnedMesh) {
             object.castShadow = true;
             object.receiveShadow = true;
             object.frustumCulled = false;
+            skinnedMeshes.push(object);
           }
           if (object instanceof THREE.Bone) {
             const canonicalName = object.name.startsWith("mixamorig") && !object.name.startsWith("mixamorig:")
@@ -483,7 +541,9 @@ export default function FurryDockersGame() {
             bones.set(canonicalName, object);
           }
         });
+        // Cloned before the mask is installed, so remote avatars keep a whole body.
         remoteTemplate = cloneSkeleton(rigScene) as THREE.Group;
+        installBoneMask(skinnedMeshes);
 
         const profiles: Array<[string, number, number, number, number]> = [
           ["mixamorig:Hips", 6, 0.34, 620, 42],
@@ -651,7 +711,6 @@ export default function FurryDockersGame() {
         camera.near = 0.1;
         fog.near = 26;
         fog.far = 45;
-        if (rigScene) rigScene.visible = true;
         if (document.pointerLockElement === renderer.domElement) document.exitPointerLock();
         // Cut straight to the top-down framing: a swooping interpolation between
         // two very different viewpoints is exactly the motion that makes people ill.
@@ -928,6 +987,7 @@ export default function FurryDockersGame() {
           target.y += rightLift * 0.42 * speedRatio * (/Foot|Toe/.test(node.name) ? 1 : 0.55);
         }
         if (/Spine2|Neck|Head/.test(node.name)) target.addScaledVector(acceleration, -0.0035);
+        nodeTargets.set(node.name, target);
         applyMuscle(node, target, muscleScale, gravityAssist);
       });
 
@@ -935,12 +995,24 @@ export default function FurryDockersGame() {
 
       const hipsNode = ragdollNodes.get("mixamorig:Hips");
       if (hipsNode && rigScene) {
+        // Partial ragdoll blending, the engine-standard "physics blend weight": the
+        // simulation runs untouched and only the pose that gets skinned is pulled back
+        // toward what the muscles were asking for. At 0 the body is pure physics; at 1
+        // it follows the walk intent exactly. Blending toward the muscle target rather
+        // than the bind pose is what keeps the legs stepping while the slop comes out.
+        const steadiness = firstPersonView ? THREE.MathUtils.clamp(settings.steady, 0, 1) : 0;
         const rotatedBindHips = bindHipsWorld.clone().applyQuaternion(yaw);
+        const hipsRendered = new THREE.Vector3(
+          hipsNode.body.position.x,
+          hipsNode.body.position.y,
+          hipsNode.body.position.z,
+        );
+        if (steadiness > 0.001) hipsRendered.lerp(hipTarget, steadiness);
         rigContainer.rotation.y = yawAngle;
         rigContainer.position.set(
-          hipsNode.body.position.x - rotatedBindHips.x,
-          hipsNode.body.position.y - rotatedBindHips.y,
-          hipsNode.body.position.z - rotatedBindHips.z,
+          hipsRendered.x - rotatedBindHips.x,
+          hipsRendered.y - rotatedBindHips.y,
+          hipsRendered.z - rotatedBindHips.z,
         );
         rigContainer.updateMatrixWorld(true);
 
@@ -953,6 +1025,20 @@ export default function FurryDockersGame() {
             endNode.body.position.y - startNode.body.position.y,
             endNode.body.position.z - startNode.body.position.z,
           ).normalize();
+          if (steadiness > 0.001) {
+            const startTarget = nodeTargets.get(link.bone.name);
+            const endTarget = nodeTargets.get(link.endNode);
+            if (startTarget && endTarget) {
+              const intended = endTarget.clone().sub(startTarget);
+              if (intended.lengthSq() > 1e-8) {
+                intended.normalize();
+                physicalDirection.lerp(intended, steadiness);
+                // A near-180° disagreement can lerp to zero length; fall back to intent.
+                if (physicalDirection.lengthSq() < 1e-8) physicalDirection.copy(intended);
+                else physicalDirection.normalize();
+              }
+            }
+          }
           const referenceDirection = link.bindDirection.clone().applyQuaternion(yaw);
           const worldDelta = new THREE.Quaternion().setFromUnitVectors(referenceDirection, physicalDirection);
           const referenceWorld = yaw.clone().multiply(link.bindWorldQuaternion);
@@ -985,6 +1071,8 @@ export default function FurryDockersGame() {
         });
       });
 
+      applyBodyMask(settings.body);
+
       const desiredFov = firstPersonView ? settings.fov : TOP_DOWN_FOV;
       if (Math.abs(camera.fov - desiredFov) > 0.001) {
         camera.fov = desiredFov;
@@ -992,7 +1080,6 @@ export default function FurryDockersGame() {
       }
 
       if (firstPersonView) {
-        if (rigScene) rigScene.visible = settings.showBody;
         camera.position.copy(eyePosition);
         camera.rotation.set(look.pitch, look.yaw + Math.PI, 0, "YXZ");
       } else {
@@ -1118,15 +1205,31 @@ export default function FurryDockersGame() {
               />
               <b>{comfort.sensitivity.toFixed(2)}</b>
             </label>
+            <label>
+              <span>STEADY</span>
+              <input
+                type="range" min={0} max={1} step={0.05} value={comfort.steady}
+                onChange={(event) => updateComfort({ steady: Number(event.target.value) })}
+              />
+              <b>{Math.round(comfort.steady * 100)}%</b>
+            </label>
+            <div className="body-modes" role="group" aria-label="Body visibility">
+              {(["full", "arms", "hidden"] as BodyView[]).map((mode) => (
+                <button
+                  key={mode}
+                  aria-pressed={comfort.body === mode}
+                  onClick={(event) => { event.currentTarget.blur(); updateComfort({ body: mode }); }}
+                >
+                  {mode === "full" ? "FULL BODY" : mode === "arms" ? "ARMS ONLY" : "NO BODY"}
+                </button>
+              ))}
+            </div>
             <div className="comfort-toggles">
               <button aria-pressed={comfort.vignette} onClick={(event) => { event.currentTarget.blur(); updateComfort({ vignette: !comfort.vignette }); }}>
                 TUNNEL {comfort.vignette ? "ON" : "OFF"}
               </button>
               <button aria-pressed={comfort.invertY} onClick={(event) => { event.currentTarget.blur(); updateComfort({ invertY: !comfort.invertY }); }}>
                 INVERT Y {comfort.invertY ? "ON" : "OFF"}
-              </button>
-              <button aria-pressed={comfort.showBody} onClick={(event) => { event.currentTarget.blur(); updateComfort({ showBody: !comfort.showBody }); }}>
-                BODY {comfort.showBody ? "ON" : "OFF"}
               </button>
             </div>
           </div>
