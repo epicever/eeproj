@@ -44,14 +44,32 @@ classic problem with putting a camera inside a physics character. Both standard 
 implemented and switchable in the VIEW panel, so they can be compared directly. Defaults
 are `FULL BODY` and `STEADY 0%`, which is the original behaviour.
 
-### 1. `ARMS ONLY` — the viewmodel answer
+### 1. `ARMS ONLY` / `SOFT FADE` — the viewmodel answer
 
 What Quake, Half-Life and Counter-Strike do: show the arms and nothing else. Because the
 whole character is one skinned mesh, and because the arms hang off the spine (so scaling
 the spine bone away would take the arms with it), this uses a **per-bone visibility mask**
-in the skinning shader. The vertex stage sums a per-bone mask over each vertex's four bone
-influences, and the fragment stage discards anything more than half hidden — the usual way
-to carve a viewmodel out of a shared mesh. `NO BODY` masks the arms too.
+in the skinning shader. The vertex stage sums the mask over each vertex's four bone
+influences — the usual way to carve a viewmodel out of a shared mesh. `NO BODY` masks the
+arms too.
+
+The mask has two channels. *Hard* hides outright. *Feather* hides only where the body comes
+near the eye, dissolving over 0.3–1.1 units, which is the same near-camera dissolve
+third-person games use to fade a character that gets between you and the camera. The
+dissolve is a dithered discard driven by interleaved gradient noise, so it costs nothing in
+transparency sorting. A vertex sitting on a seam picks up a mix of both channels through
+its skin weights, which is what softens an edge instead of cutting it.
+
+- `ARMS ONLY` hard-hides the body but *feathers the shoulders*, so the arms dissolve away
+  at the top rather than ending on a cut edge.
+- `SOFT FADE` feathers the whole body instead of hard-hiding it.
+
+One honest caveat about `SOFT FADE`: from inside your own head, nearly everything you can
+see of yourself is close. Measured looking down, 619k of the 640k visible body pixels sit
+within 0.6 units of the eye. So a near-camera fade dissolves almost all of the visible
+body, and `SOFT FADE` ends up within 0.07% of `ARMS ONLY` in raw coverage — what separates
+them is the softness of the edge, not how much body survives. Reaching the band as far as
+the hips just reinvents `ARMS ONLY` outright, which is why it stops at 1.1.
 
 The shadow pass is deliberately left unpatched, so a hidden body still casts its full
 silhouette on the ground. Measured looking straight down, `ARMS ONLY` changes 78% of the
@@ -73,6 +91,14 @@ the legs stepping instead of going rigid.
 Measured while dashing back and forward, torso sway (RMS deviation of the chest relative to
 the character root) falls from 0.46 at 0%, to 0.24 at 50%, to 0.019 at 100% — a 96%
 reduction. The foot still lifts 0.216 units per stride at 100%, so the walk survives.
+
+Those muscle targets are a spring's input, not a display pose: `acceleration` is a raw
+per-frame finite difference and the walk curves have corners in them. The ragdoll used to
+smooth all of that on the way to the screen, so blending it out turned the pose jerky
+whenever direction changed quickly. The intent signal is therefore filtered before it is
+blended in, which cut pose jerk (RMS second derivative of the chest while dashing) from 190
+to 35 while keeping 95% of the stride. Filtering harder keeps cutting jerk — 21 at roughly
+double the strength — but flattens the stride to 62%, so it stops there.
 
 - **Good:** keeps a real body under you, so looking down still shows a character.
 - **Costs:** the higher you push it, the less this reads as a floppy ragdoll game. It also
