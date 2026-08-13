@@ -36,14 +36,34 @@ type RemoteAvatar = {
   container: THREE.Group;
   bones: Map<string, THREE.Bone>;
 };
+type ComfortSettings = {
+  fov: number;
+  sensitivity: number;
+  invertY: boolean;
+  vignette: boolean;
+  showBody: boolean;
+};
 
 const MAX_PLAYERS = 8;
 const PEER_PREFIX = "furry-dockers-";
 const ROOM_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+const TOP_DOWN_FOV = 47;
+const MAX_PITCH = 1.45;
+const EYE_FORWARD = 0.16;
+const EYE_RISE = 0.26;
+const EYE_DRIFT = 0.05;
+const DEFAULT_COMFORT: ComfortSettings = { fov: 78, sensitivity: 1, invertY: false, vignette: true, showBody: true };
 
 function makeRoomCode() {
   const values = crypto.getRandomValues(new Uint8Array(4));
   return Array.from(values, (value) => ROOM_LETTERS[value % ROOM_LETTERS.length]).join("");
+}
+
+// Pointer lock only makes sense for a mouse; touch devices look by dragging instead.
+function supportsPointerLook() {
+  if (typeof window === "undefined" || typeof document === "undefined") return false;
+  if (typeof document.body?.requestPointerLock !== "function") return false;
+  return !window.matchMedia?.("(pointer: coarse)").matches;
 }
 
 function isPosePacket(value: unknown): value is PosePacket {
@@ -74,6 +94,9 @@ function pointMesh(geometry: THREE.BufferGeometry, material: THREE.Material, sce
 
 export default function FurryDockersGame() {
   const mountRef = useRef<HTMLDivElement>(null);
+  const vignetteRef = useRef<HTMLDivElement>(null);
+  const toggleViewRef = useRef<() => void>(() => undefined);
+  const requestLookRef = useRef<() => void>(() => undefined);
   const touchKeys = useRef<Record<string, boolean>>({});
   const localPoseRef = useRef<PosePacket | null>(null);
   const receivePoseRef = useRef<(playerId: string, pose: PosePacket) => void>(() => undefined);
@@ -89,6 +112,15 @@ export default function FurryDockersGame() {
   const [joinCode, setJoinCode] = useState("");
   const [networkStatus, setNetworkStatus] = useState("PLAYING SOLO");
   const [playerCount, setPlayerCount] = useState(1);
+  const [firstPerson, setFirstPerson] = useState(false);
+  const [pointerLocked, setPointerLocked] = useState(false);
+  const [comfort, setComfort] = useState<ComfortSettings>(DEFAULT_COMFORT);
+  const [pointerLook] = useState(supportsPointerLook);
+  const comfortRef = useRef(comfort);
+
+  useEffect(() => {
+    comfortRef.current = comfort;
+  }, [comfort]);
 
   const stopPoseTimer = () => {
     if (networkTimerRef.current !== null) window.clearInterval(networkTimerRef.current);
@@ -235,8 +267,9 @@ export default function FurryDockersGame() {
     scene.background = new THREE.Color(0x151915);
     scene.fog = new THREE.Fog(0x151915, 26, 45);
 
-    const camera = new THREE.PerspectiveCamera(47, mount.clientWidth / mount.clientHeight, 0.1, 100);
+    const camera = new THREE.PerspectiveCamera(TOP_DOWN_FOV, mount.clientWidth / mount.clientHeight, 0.1, 100);
     camera.position.set(0, 15, 10.5);
+    camera.rotation.order = "YXZ";
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.8));
@@ -340,6 +373,27 @@ export default function FurryDockersGame() {
     let rigScene: THREE.Group | null = null;
     let remoteTemplate: THREE.Group | null = null;
     let disposed = false;
+
+    const headBaseScale = new THREE.Vector3(1, 1, 1);
+    const look = { yaw: Math.PI, pitch: 0 };
+    let firstPersonMode = false;
+    let pointerIsLocked = false;
+    let eyeHeight = 2.9;
+    let snapEyeHeight = true;
+    let turnSpeed = 0;
+    let previousLookYaw = look.yaw;
+    let vignetteStrength = 0;
+    let snapTopDownCamera = false;
+
+    // Collapsing the head bone keeps the local skull (and anything parented to it)
+    // out of the near plane instead of letting it clip across the whole view.
+    const applyHeadOcclusion = () => {
+      const head = localBones.get("mixamorig:Head");
+      if (!head) return;
+      if (firstPersonMode) head.scale.setScalar(0.0001);
+      else head.scale.copy(headBaseScale);
+      head.updateMatrixWorld(true);
+    };
 
     const removeRemote = (playerId: string) => {
       latestRemotePoses.delete(playerId);
@@ -450,6 +504,9 @@ export default function FurryDockersGame() {
         const hipsBone = bones.get("mixamorig:Hips");
         if (!hipsBone) throw new Error("The attached rig has no hips bone");
         hipsBone.getWorldPosition(bindHipsWorld);
+        const headBone = bones.get("mixamorig:Head");
+        if (headBone) headBaseScale.copy(headBone.scale);
+        applyHeadOcclusion();
         const initialYaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(facing.x, facing.z));
         for (const [name, mass, radius, muscle, damping] of profiles) {
           const bone = bones.get(name);
@@ -544,6 +601,59 @@ export default function FurryDockersGame() {
       });
     };
 
+    const pointerLookAvailable = supportsPointerLook();
+
+    const requestLook = () => {
+      if (!firstPersonMode || !pointerLookAvailable || document.pointerLockElement === renderer.domElement) return;
+      const canvas = renderer.domElement;
+      const attempt = (options?: PointerLockOptions) => {
+        try {
+          const result = canvas.requestPointerLock(options) as unknown;
+          return result instanceof Promise ? result : Promise.resolve();
+        } catch (error) {
+          return Promise.reject(error);
+        }
+      };
+      // Raw (unaccelerated) movement tracks the hand 1:1, which reads as far steadier
+      // than OS-accelerated deltas; browsers that reject the option get a plain lock.
+      // If both fail the click overlay simply stays up, so nothing needs reporting.
+      attempt({ unadjustedMovement: true }).catch(() => attempt().catch(() => undefined));
+    };
+
+    const setFirstPersonMode = (next: boolean) => {
+      if (next === firstPersonMode) return;
+      firstPersonMode = next;
+      setFirstPerson(next);
+      mouseButtons.clear();
+      applyHeadOcclusion();
+      const fog = scene.fog as THREE.Fog;
+      if (next) {
+        look.yaw = Math.atan2(facing.x, facing.z);
+        look.pitch = 0;
+        previousLookYaw = look.yaw;
+        turnSpeed = 0;
+        snapEyeHeight = true;
+        camera.near = 0.06;
+        // The top-down fog was tuned for a 15m-high camera; at eye level it would
+        // swallow the far wall, so push it back to a purely atmospheric range.
+        fog.near = 42;
+        fog.far = 96;
+        requestLook();
+      } else {
+        camera.near = 0.1;
+        fog.near = 26;
+        fog.far = 45;
+        if (rigScene) rigScene.visible = true;
+        if (document.pointerLockElement === renderer.domElement) document.exitPointerLock();
+        // Cut straight to the top-down framing: a swooping interpolation between
+        // two very different viewpoints is exactly the motion that makes people ill.
+        snapTopDownCamera = true;
+      }
+      camera.updateProjectionMatrix();
+    };
+    toggleViewRef.current = () => setFirstPersonMode(!firstPersonMode);
+    requestLookRef.current = requestLook;
+
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.target instanceof HTMLInputElement) return;
       if (["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "ShiftLeft"].includes(event.code)) {
@@ -551,20 +661,73 @@ export default function FurryDockersGame() {
         keys.add(event.code);
       }
       if (event.code === "KeyR") reset();
+      if (event.code === "KeyV" && !event.repeat) setFirstPersonMode(!firstPersonMode);
     };
     const onKeyUp = (event: KeyboardEvent) => keys.delete(event.code);
     const onMouseDown = (event: MouseEvent) => {
+      if (firstPersonMode && pointerLookAvailable && !pointerIsLocked) {
+        // The click that captures the pointer must not also throw a punch.
+        requestLook();
+        return;
+      }
       if (event.button === 0 || event.button === 2) mouseButtons.add(event.button);
     };
     const onMouseUp = (event: MouseEvent) => mouseButtons.delete(event.button);
+    const onMouseMove = (event: MouseEvent) => {
+      if (!firstPersonMode || !pointerIsLocked) return;
+      const settings = comfortRef.current;
+      const scale = 0.0022 * settings.sensitivity;
+      // Browsers can emit one huge delta on the frame the pointer is captured.
+      const deltaX = THREE.MathUtils.clamp(event.movementX, -260, 260);
+      const deltaY = THREE.MathUtils.clamp(event.movementY, -260, 260);
+      look.yaw -= deltaX * scale;
+      look.pitch += (settings.invertY ? deltaY : -deltaY) * scale;
+      look.pitch = THREE.MathUtils.clamp(look.pitch, -MAX_PITCH, MAX_PITCH);
+    };
+    const onPointerLockChange = () => {
+      pointerIsLocked = document.pointerLockElement === renderer.domElement;
+      setPointerLocked(pointerIsLocked);
+      if (!pointerIsLocked) mouseButtons.clear();
+    };
     const onWindowBlur = () => mouseButtons.clear();
     const onContextMenu = (event: MouseEvent) => event.preventDefault();
+
+    let lookPointerId: number | null = null;
+    const lastTouch = { x: 0, y: 0 };
+    const onTouchLookStart = (event: PointerEvent) => {
+      if (!firstPersonMode || event.pointerType === "mouse" || lookPointerId !== null) return;
+      lookPointerId = event.pointerId;
+      lastTouch.x = event.clientX;
+      lastTouch.y = event.clientY;
+    };
+    const onTouchLookMove = (event: PointerEvent) => {
+      if (event.pointerId !== lookPointerId) return;
+      const settings = comfortRef.current;
+      const scale = 0.0042 * settings.sensitivity;
+      const deltaX = event.clientX - lastTouch.x;
+      const deltaY = event.clientY - lastTouch.y;
+      lastTouch.x = event.clientX;
+      lastTouch.y = event.clientY;
+      look.yaw -= deltaX * scale;
+      look.pitch += (settings.invertY ? deltaY : -deltaY) * scale;
+      look.pitch = THREE.MathUtils.clamp(look.pitch, -MAX_PITCH, MAX_PITCH);
+    };
+    const onTouchLookEnd = (event: PointerEvent) => {
+      if (event.pointerId === lookPointerId) lookPointerId = null;
+    };
+
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     renderer.domElement.addEventListener("mousedown", onMouseDown);
     renderer.domElement.addEventListener("contextmenu", onContextMenu);
+    renderer.domElement.addEventListener("pointerdown", onTouchLookStart);
+    window.addEventListener("pointermove", onTouchLookMove);
+    window.addEventListener("pointerup", onTouchLookEnd);
+    window.addEventListener("pointercancel", onTouchLookEnd);
+    window.addEventListener("mousemove", onMouseMove);
     window.addEventListener("mouseup", onMouseUp);
     window.addEventListener("blur", onWindowBlur);
+    document.addEventListener("pointerlockchange", onPointerLockChange);
 
     const resolveObstacle = (position: THREE.Vector3, radius: number) => {
       for (const box of obstacles) {
@@ -598,9 +761,24 @@ export default function FurryDockersGame() {
       if (input.lengthSq() > 1) input.normalize();
       const isMoving = input.lengthSq() > 0.01;
       const sprint = keys.has("ShiftLeft") ? 1.35 : 1;
-      if (isMoving) {
-        velocity.addScaledVector(input, 24 * sprint * dt);
-        facing.lerp(input.clone().normalize(), 1 - Math.exp(-8 * dt)).normalize();
+      const settings = comfortRef.current;
+      const firstPersonView = firstPersonMode;
+      const lookForward = new THREE.Vector3(Math.sin(look.yaw), 0, Math.cos(look.yaw));
+      const lookRight = new THREE.Vector3(-lookForward.z, 0, lookForward.x);
+      // First person walks relative to the view; top-down keeps its world-axis feel.
+      const moveDirection = firstPersonView
+        ? lookRight.clone().multiplyScalar(input.x).addScaledVector(lookForward, -input.z)
+        : input;
+      if (isMoving) velocity.addScaledVector(moveDirection, 24 * sprint * dt);
+      if (firstPersonView) {
+        // The body chases the view instead of snapping to it, so a fast flick never
+        // whips the ragdoll — and the camera itself is never dragged along by the body.
+        const currentYaw = Math.atan2(facing.x, facing.z);
+        const yawGap = Math.atan2(Math.sin(look.yaw - currentYaw), Math.cos(look.yaw - currentYaw));
+        const blendedYaw = currentYaw + yawGap * (1 - Math.exp(-16 * dt));
+        facing.set(Math.sin(blendedYaw), 0, Math.cos(blendedYaw));
+      } else if (isMoving) {
+        facing.lerp(moveDirection.clone().normalize(), 1 - Math.exp(-8 * dt)).normalize();
       }
       velocity.multiplyScalar(Math.exp(-(isMoving ? 3.8 : 9.5) * dt));
       const maxSpeed = 6.1 * sprint;
@@ -642,6 +820,15 @@ export default function FurryDockersGame() {
       const yaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yawAngle);
       const hipTarget = new THREE.Vector3(root.x, bindHipsWorld.y + bob, root.z);
       const armInertia = acceleration.clone().multiplyScalar(-0.008);
+      // In first person the arms punch along the aim ray, pitch included, so the
+      // hands land where the crosshair is instead of always swinging out flat.
+      const reachDirection = firstPersonView
+        ? new THREE.Vector3(
+            Math.sin(look.yaw) * Math.cos(look.pitch),
+            Math.sin(look.pitch),
+            Math.cos(look.yaw) * Math.cos(look.pitch),
+          )
+        : facing;
 
       ragdollNodes.forEach((node) => {
         const target = node.bindOffset.clone().applyQuaternion(yaw).add(hipTarget);
@@ -661,8 +848,8 @@ export default function FurryDockersGame() {
             if (reaching) {
               const lowerArmLength = handNode ? forearmNode.bindOffset.distanceTo(handNode.bindOffset) : 0;
               const reachLength = /Hand/.test(node.name) ? upperArmLength + lowerArmLength : upperArmLength;
-              target.copy(armTarget).addScaledVector(facing, reachLength * 0.92);
-              target.y -= 0.12 + reachLength * 0.08;
+              target.copy(armTarget).addScaledVector(reachDirection, reachLength * 0.92);
+              target.y -= firstPersonView ? 0.06 : 0.12 + reachLength * 0.08;
               muscleScale = /Hand/.test(node.name) ? 0.48 : 0.58;
             } else {
               target.copy(armTarget).add(new THREE.Vector3(0, -upperArmLength, 0));
@@ -739,10 +926,54 @@ export default function FurryDockersGame() {
         });
       });
 
-      const cameraTarget = root.clone().add(new THREE.Vector3(0, 1.15, 0));
-      const cameraPosition = cameraTarget.clone().add(new THREE.Vector3(0, 14.5, 9.8));
-      camera.position.lerp(cameraPosition, 1 - Math.exp(-3.2 * dt));
-      camera.lookAt(cameraTarget);
+      const desiredFov = firstPersonView ? settings.fov : TOP_DOWN_FOV;
+      if (Math.abs(camera.fov - desiredFov) > 0.001) {
+        camera.fov = desiredFov;
+        camera.updateProjectionMatrix();
+      }
+
+      if (firstPersonView) {
+        if (rigScene) rigScene.visible = settings.showBody;
+        // The eye height is pinned to where the ragdoll's head actually settles, but it
+        // may only creep there at EYE_DRIFT units/second — fast enough to survive a
+        // posture change, far too slow to read as bob.
+        const headBodyY = ragdollNodes.get("mixamorig:Head")?.body.position.y;
+        if (headBodyY !== undefined) {
+          const eyeTarget = headBodyY + EYE_RISE;
+          if (snapEyeHeight) eyeHeight = eyeTarget;
+          else eyeHeight += THREE.MathUtils.clamp(eyeTarget - eyeHeight, -EYE_DRIFT * dt, EYE_DRIFT * dt);
+        }
+        snapEyeHeight = false;
+        // The eye rides the smooth kinematic root: no walk bob, no landing dip, no
+        // roll, and none of the ragdoll's jitter reaches the view.
+        camera.position.set(root.x, eyeHeight, root.z).addScaledVector(lookForward, EYE_FORWARD);
+        camera.rotation.set(look.pitch, look.yaw + Math.PI, 0, "YXZ");
+      } else {
+        const cameraTarget = root.clone().add(new THREE.Vector3(0, 1.15, 0));
+        const cameraPosition = cameraTarget.clone().add(new THREE.Vector3(0, 14.5, 9.8));
+        if (snapTopDownCamera) {
+          camera.position.copy(cameraPosition);
+          snapTopDownCamera = false;
+        } else {
+          camera.position.lerp(cameraPosition, 1 - Math.exp(-3.2 * dt));
+        }
+        camera.lookAt(cameraTarget);
+      }
+
+      const yawDelta = Math.atan2(Math.sin(look.yaw - previousLookYaw), Math.cos(look.yaw - previousLookYaw));
+      previousLookYaw = look.yaw;
+      turnSpeed += (Math.abs(yawDelta) / Math.max(dt, 0.001) - turnSpeed) * (1 - Math.exp(-9 * dt));
+      const vignetteElement = vignetteRef.current;
+      if (vignetteElement) {
+        // Dynamic tunnelling: narrowing peripheral vision while moving or turning is
+        // the single most effective comfort trick for players prone to sim sickness.
+        const wanted = firstPersonView && settings.vignette
+          ? THREE.MathUtils.clamp(speedRatio * 0.6 + THREE.MathUtils.clamp(turnSpeed / 3.4, 0, 1) * 0.5, 0, 1)
+          : 0;
+        vignetteStrength += (wanted - vignetteStrength) * (1 - Math.exp(-6 * dt));
+        vignetteElement.style.opacity = vignetteStrength.toFixed(3);
+        vignetteElement.style.setProperty("--tunnel", `${(80 - vignetteStrength * 32).toFixed(1)}%`);
+      }
 
       renderer.render(scene, camera);
       animation = requestAnimationFrame(animate);
@@ -765,8 +996,17 @@ export default function FurryDockersGame() {
       window.removeEventListener("keyup", onKeyUp);
       renderer.domElement.removeEventListener("mousedown", onMouseDown);
       renderer.domElement.removeEventListener("contextmenu", onContextMenu);
+      renderer.domElement.removeEventListener("pointerdown", onTouchLookStart);
+      window.removeEventListener("pointermove", onTouchLookMove);
+      window.removeEventListener("pointerup", onTouchLookEnd);
+      window.removeEventListener("pointercancel", onTouchLookEnd);
+      window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
       window.removeEventListener("blur", onWindowBlur);
+      document.removeEventListener("pointerlockchange", onPointerLockChange);
+      if (document.pointerLockElement === renderer.domElement) document.exitPointerLock();
+      toggleViewRef.current = () => undefined;
+      requestLookRef.current = () => undefined;
       localPoseRef.current = null;
       receivePoseRef.current = () => undefined;
       removeRemoteRef.current = () => undefined;
@@ -786,9 +1026,65 @@ export default function FurryDockersGame() {
     onPointerCancel: () => { touchKeys.current[key] = false; },
   });
 
+  const updateComfort = (patch: Partial<ComfortSettings>) => setComfort((current) => ({ ...current, ...patch }));
+
   return (
     <main className="game-shell">
       <div ref={mountRef} className="game-stage" aria-label="Playable 3D Furry Dockers arena" />
+
+      <div ref={vignetteRef} className="comfort-vignette" aria-hidden="true" />
+
+      {firstPerson && <div className="crosshair" aria-hidden="true" />}
+
+      {firstPerson && pointerLook && !pointerLocked && (
+        <button className="look-prompt" onClick={() => requestLookRef.current()}>
+          CLICK TO LOOK
+          <span>MOUSE AIMS · ESC RELEASES</span>
+        </button>
+      )}
+
+      <section className="view-panel" aria-label="Camera view settings">
+        <button
+          className="view-toggle"
+          aria-pressed={firstPerson}
+          onClick={(event) => { event.currentTarget.blur(); toggleViewRef.current(); }}
+        >
+          VIEW · {firstPerson ? "FIRST PERSON" : "TOP-DOWN"} <kbd>V</kbd>
+        </button>
+
+        {firstPerson && (
+          <div className="comfort-copy">
+            <p className="look-hint">{pointerLook ? "CLICK STAGE TO LOOK · ESC FREES CURSOR" : "DRAG THE STAGE TO LOOK"}</p>
+            <label>
+              <span>FOV</span>
+              <input
+                type="range" min={65} max={100} step={1} value={comfort.fov}
+                onChange={(event) => updateComfort({ fov: Number(event.target.value) })}
+              />
+              <b>{comfort.fov}</b>
+            </label>
+            <label>
+              <span>SENS</span>
+              <input
+                type="range" min={0.3} max={2.5} step={0.05} value={comfort.sensitivity}
+                onChange={(event) => updateComfort({ sensitivity: Number(event.target.value) })}
+              />
+              <b>{comfort.sensitivity.toFixed(2)}</b>
+            </label>
+            <div className="comfort-toggles">
+              <button aria-pressed={comfort.vignette} onClick={(event) => { event.currentTarget.blur(); updateComfort({ vignette: !comfort.vignette }); }}>
+                TUNNEL {comfort.vignette ? "ON" : "OFF"}
+              </button>
+              <button aria-pressed={comfort.invertY} onClick={(event) => { event.currentTarget.blur(); updateComfort({ invertY: !comfort.invertY }); }}>
+                INVERT Y {comfort.invertY ? "ON" : "OFF"}
+              </button>
+              <button aria-pressed={comfort.showBody} onClick={(event) => { event.currentTarget.blur(); updateComfort({ showBody: !comfort.showBody }); }}>
+                BODY {comfort.showBody ? "ON" : "OFF"}
+              </button>
+            </div>
+          </div>
+        )}
+      </section>
 
       <section className="controls-panel" aria-label="Game controls">
         <div className="key-grid" aria-hidden="true">
@@ -796,10 +1092,12 @@ export default function FurryDockersGame() {
           <kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>
         </div>
         <div className="control-copy">
-          <p><strong>MOVE</strong> WASD / ARROWS</p>
+          <p><strong>MOVE</strong> {firstPerson ? "WASD (VIEW-RELATIVE)" : "WASD / ARROWS"}</p>
+          {firstPerson && <p><strong>LOOK</strong> MOUSE</p>}
           <p><strong>SPRINT</strong> HOLD SHIFT</p>
           <p><strong>L ARM</strong> HOLD LEFT CLICK</p>
           <p><strong>R ARM</strong> HOLD RIGHT CLICK</p>
+          <p><strong>VIEW</strong> PRESS V</p>
           <p><strong>RESET</strong> PRESS R</p>
         </div>
       </section>

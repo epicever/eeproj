@@ -6,7 +6,27 @@ button, kbd { font:inherit; }
 button { cursor:pointer; }
 .game-shell { position:relative; width:100vw; height:100dvh; overflow:hidden; background:var(--deep); }
 .game-stage { position:absolute; inset:0; }
-.game-stage canvas { display:block; width:100%; height:100%; }
+.game-stage canvas { display:block; width:100%; height:100%; touch-action:none; }
+.comfort-vignette { position:absolute; inset:0; opacity:0; pointer-events:none; background:radial-gradient(circle at 50% 50%, rgba(0,0,0,0) var(--tunnel,80%), rgba(0,0,0,.93) 100%); }
+.crosshair { position:absolute; left:50%; top:50%; width:7px; height:7px; margin:-3.5px 0 0 -3.5px; border-radius:50%; background:var(--acid); box-shadow:0 0 0 1.5px rgba(0,0,0,.55), 0 0 9px rgba(0,0,0,.5); opacity:.9; pointer-events:none; }
+.look-prompt { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); display:grid; gap:7px; padding:16px 26px; color:var(--ink); background:var(--panel); border:1px solid rgba(255,255,255,.3); border-radius:3px; backdrop-filter:blur(9px); font:800 13px/1 monospace; letter-spacing:.12em; }
+.look-prompt span { color:rgba(244,241,223,.5); font:700 9px/1 monospace; letter-spacing:.08em; }
+.look-prompt:hover,.look-prompt:focus-visible { color:var(--deep); background:var(--acid); outline:none; }
+.look-prompt:hover span,.look-prompt:focus-visible span { color:rgba(21,25,21,.66); }
+.view-panel { position:absolute; top:clamp(18px,3vw,38px); left:clamp(18px,3vw,42px); width:212px; padding:11px; background:var(--panel); border-left:3px solid var(--acid); backdrop-filter:blur(9px); }
+.view-toggle { display:flex; align-items:center; justify-content:center; gap:7px; width:100%; height:32px; border:1px solid rgba(255,255,255,.28); border-radius:2px; color:var(--ink); background:rgba(255,255,255,.08); font:800 10px/1 monospace; letter-spacing:.06em; }
+.view-toggle:hover,.view-toggle:focus-visible { color:var(--deep); background:var(--acid); outline:none; }
+.view-toggle kbd { width:19px; height:19px; font-size:9px; }
+.comfort-copy { display:grid; gap:7px; margin-top:10px; }
+.look-hint { margin:0; color:rgba(244,241,223,.42); font:700 8px/1.3 monospace; letter-spacing:.07em; }
+.comfort-copy label { display:flex; align-items:center; gap:7px; color:rgba(244,241,223,.55); font:700 9px/1 monospace; letter-spacing:.08em; }
+.comfort-copy label span { width:31px; }
+.comfort-copy label b { width:32px; color:var(--acid); text-align:right; }
+.comfort-copy input[type=range] { flex:1; min-width:0; accent-color:var(--acid); }
+.comfort-toggles { display:grid; grid-template-columns:repeat(2,1fr); gap:5px; }
+.comfort-toggles button { padding:7px 4px; border:1px solid rgba(255,255,255,.24); border-radius:2px; color:rgba(244,241,223,.62); background:rgba(255,255,255,.06); font:800 8px/1 monospace; letter-spacing:.06em; }
+.comfort-toggles button:last-child { grid-column:1/-1; }
+.comfort-toggles button[aria-pressed=true] { color:var(--deep); background:var(--acid); border-color:var(--acid); }
 .controls-panel { position:absolute; left:clamp(20px,4vw,58px); bottom:clamp(22px,4vw,48px); display:flex; align-items:center; gap:18px; padding:14px; background:var(--panel); border-left:3px solid var(--acid); backdrop-filter:blur(9px); }
 .key-grid { display:grid; grid-template-columns:repeat(3,27px); gap:4px; }
 kbd { display:grid; place-items:center; width:27px; height:27px; color:var(--ink); border:1px solid rgba(255,255,255,.45); border-radius:2px; background:rgba(255,255,255,.09); font:700 10px/1 monospace; box-shadow:inset 0 -2px rgba(0,0,0,.35); }
@@ -31,4 +51,4 @@ kbd { display:grid; place-items:center; width:27px; height:27px; color:var(--ink
 .touch-pad button { position:absolute; width:48px; height:48px; border:1px solid rgba(255,255,255,.35); border-radius:11px; color:var(--ink); background:rgba(15,19,16,.72); backdrop-filter:blur(8px); touch-action:none; }
 .touch-pad button:active { color:var(--deep); background:var(--acid); }
 .touch-up { top:0; left:47px; }.touch-left { top:47px; left:0; }.touch-down { bottom:0; left:47px; }.touch-right { top:47px; right:0; }
-@media (max-width:720px), (pointer:coarse) { .controls-panel { display:none; }.touch-pad { display:block; }.multiplayer-panel { min-width:250px; } }
+@media (max-width:720px), (pointer:coarse) { .controls-panel { display:none; }.touch-pad { display:block; }.multiplayer-panel { min-width:250px; }.view-panel { top:auto; bottom:22px; left:16px; width:162px; } }
