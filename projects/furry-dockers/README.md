@@ -2,6 +2,39 @@
 
 A top-down Three.js active-ragdoll playground using a single skinned GLB character, Cannon physics bodies, fixed-length constraints, low-strength muscle targets, and PeerJS rooms for up to eight players.
 
+## Customising your character
+
+Before entering the yard you get a customisation screen. Pick a piece, then tap the body
+to stick it on wherever you tapped: horns on the head, wings off the shoulder blades, a
+tail at the base of the spine, plus ears, fins, spikes and antennae. Drag to turn the
+model, scroll to zoom, and MIRROR places the matching piece on the other side.
+
+Pieces then ride the active ragdoll with no per-frame code at all, because of how they are
+bound:
+
+- The tap is a raycast against the skinned mesh. The bone that owns that spot is found by
+  summing the skin weights of the triangle that was hit and taking the loudest — that is
+  the bone whose motion the surface actually follows.
+- The piece is stored as a transform in that bone's own space, with +Y lined up against the
+  surface normal, and is then parented to the bone. Whatever the muscles do to a limb
+  happens to its horns too.
+- Sizes are stored in world units and divided by the bone's world scale when attached, so a
+  piece keeps its real size whatever units the rig is authored in. This one matters here:
+  bone-local space on this rig runs about 370 units to the world unit.
+- Mirroring casts a second ray at the reflected point rather than flipping a transform,
+  because left and right bind orientations are not guaranteed to be mirror images. The
+  reflection is done in world space, where the rig is centred on x = 0; rigScene's own
+  frame is not centred, since recentring is done by moving the object.
+
+Measured with six pieces attached, sprinting and turning: every piece moved 1.9 to 2.4
+world units through the arena while its distance to its own bone stayed constant to six
+decimal places.
+
+The sample pieces are generated in code rather than shipped as assets — a ring swept along
+a curve with a varying radius covers horns, tails, spikes, antennae and fin spines, and the
+wing is an extruded outline. Your pieces are also sent to the other players in the room, as
+a JSON message alongside the binary pose stream, so everyone sees your horns.
+
 ## Controls
 
 - WASD or arrow keys: move — world-relative in top-down, view-relative in first person

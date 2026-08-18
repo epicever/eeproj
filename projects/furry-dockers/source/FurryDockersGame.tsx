@@ -6,6 +6,8 @@ import * as CANNON from "cannon-es";
 import Peer, { type DataConnection } from "peerjs";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
+import CharacterCustomizer from "./CharacterCustomizer";
+import { type Attachment, attachToSkeleton, disposePart } from "./characterParts";
 
 type Crate = { mesh: THREE.Mesh; vel: THREE.Vector3; half: number };
 type RagdollNode = {
@@ -48,6 +50,8 @@ type Snapshot = { time: number; x: number; y: number; z: number; yaw: number; qu
 type RemoteAvatar = {
   container: THREE.Group;
   bones: Array<THREE.Bone | undefined>;
+  boneByName: Map<string, THREE.Bone>;
+  parts: THREE.Group[];
   snapshots: Snapshot[];
 };
 
@@ -215,6 +219,12 @@ export default function FurryDockersGame() {
   const [pointerLocked, setPointerLocked] = useState(false);
   const [comfort, setComfort] = useState<ComfortSettings>(DEFAULT_COMFORT);
   const [pointerLook] = useState(supportsPointerLook);
+  const [phase, setPhase] = useState<"customise" | "play">("customise");
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const attachmentsRef = useRef<Attachment[]>([]);
+  const remoteLooksRef = useRef(new Map<number, Attachment[]>());
+  const sendLookRef = useRef<() => void>(() => undefined);
+  const applyLookRef = useRef<(slot: number, list: Attachment[]) => void>(() => undefined);
   const comfortRef = useRef(comfort);
 
   useEffect(() => {
@@ -240,12 +250,28 @@ export default function FurryDockersGame() {
     guestConnectionsRef.current.forEach((connection) => {
       if (connection.open) connection.send(message);
     });
+    sendLook();
   };
 
   const startPoseTimer = () => {
     stopPoseTimer();
     if (roleRef.current === "host") networkTimerRef.current = window.setInterval(broadcastRoster, 1000);
   };
+
+  // Appearance is low frequency and small, so it rides the same channel as JSON text
+  // rather than the binary pose stream. It is resent with every roster tick because the
+  // channel is unreliable, which also covers a guest that joined after someone else.
+  const sendLook = () => {
+    const message = JSON.stringify({ type: "look", slot: localSlotRef.current, attachments: attachmentsRef.current });
+    if (roleRef.current === "host") {
+      guestConnectionsRef.current.forEach((connection) => {
+        if (connection.open) connection.send(message);
+      });
+    } else if (hostConnectionRef.current?.open) {
+      hostConnectionRef.current.send(message);
+    }
+  };
+  sendLookRef.current = sendLook;
 
   const claimSlot = () => {
     const taken = new Set(guestSlotsRef.current.values());
@@ -296,8 +322,22 @@ export default function FurryDockersGame() {
         broadcastRoster();
       });
       connection.on("data", (value) => {
-        const view = toDataView(value);
         const slot = guestSlotsRef.current.get(connection.peer);
+        if (typeof value === "string" && slot !== undefined) {
+          try {
+            const packet = JSON.parse(value);
+            if (packet?.type !== "look") return;
+            const stamped = JSON.stringify({ type: "look", slot, attachments: packet.attachments ?? [] });
+            applyLookRef.current(slot, packet.attachments ?? []);
+            guestConnectionsRef.current.forEach((other, peerId) => {
+              if (peerId !== connection.peer && other.open) other.send(stamped);
+            });
+          } catch {
+            /* a malformed control message is simply ignored */
+          }
+          return;
+        }
+        const view = toDataView(value);
         if (!view || slot === undefined || view.getUint8(0) !== POSE_MESSAGE) return;
         // Stamp the sender's slot so the relay cannot be spoofed by a guest, then pass
         // the same buffer straight on: no re-encoding, no re-serialising.
@@ -360,6 +400,7 @@ export default function FurryDockersGame() {
         window.clearTimeout(joinTimeout);
         setNetworkStatus("CONNECTED");
         startPoseTimer();
+        sendLookRef.current();
       });
       connection.on("data", (value) => {
         const view = toDataView(value);
@@ -369,7 +410,7 @@ export default function FurryDockersGame() {
           return;
         }
         if (typeof value !== "string") return;
-        let packet: { type?: string; players?: Record<string, number> };
+        let packet: { type?: string; players?: Record<string, number>; slot?: number; attachments?: Attachment[] };
         try {
           packet = JSON.parse(value);
         } catch {
@@ -384,6 +425,8 @@ export default function FurryDockersGame() {
           const live = new Set<number>([0, ...Object.values(players)]);
           live.delete(localSlotRef.current);
           keepRemotesRef.current(live);
+        } else if (packet.type === "look" && typeof packet.slot === "number") {
+          applyLookRef.current(packet.slot, packet.attachments ?? []);
         } else if (packet.type === "full") {
           roomFullRef.current = true;
           setNetworkStatus("ROOM IS FULL");
@@ -411,7 +454,7 @@ export default function FurryDockersGame() {
 
   useEffect(() => {
     const mount = mountRef.current;
-    if (!mount) return;
+    if (!mount || phase !== "play") return;
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x151915);
@@ -668,6 +711,7 @@ ${shader.fragmentShader}`.replace(
         const materials = Array.isArray(object.material) ? object.material : [object.material];
         materials.forEach((material) => material.dispose());
       });
+      avatar.parts.forEach(disposePart);
       scene.remove(avatar.container);
       remoteAvatars.delete(slot);
     };
@@ -681,6 +725,19 @@ ${shader.fragmentShader}`.replace(
       avatar.snapshots.push(snapshot);
       if (avatar.snapshots.length > SNAPSHOT_LIMIT) avatar.snapshots.shift();
     };
+    const applyLook = (slot: number, list: Attachment[]) => {
+      remoteLooksRef.current.set(slot, list);
+      const avatar = remoteAvatars.get(slot);
+      if (!avatar) return;
+      avatar.parts.forEach((group) => {
+        group.removeFromParent();
+        disposePart(group);
+      });
+      avatar.parts = list
+        .map((attachment) => attachToSkeleton(attachment, (name) => avatar.boneByName.get(name)))
+        .filter((group): group is THREE.Group => group !== null);
+    };
+    applyLookRef.current = applyLook;
     removeRemoteRef.current = removeRemote;
     keepRemotesRef.current = (slots) => {
       Array.from(remoteAvatars.keys()).forEach((slot) => {
@@ -715,9 +772,12 @@ ${shader.fragmentShader}`.replace(
       const avatar: RemoteAvatar = {
         container,
         bones: SYNC_BONES.map((name) => byName.get(name)),
+        boneByName: byName,
+        parts: [],
         snapshots: [],
       };
       remoteAvatars.set(slot, avatar);
+      applyLook(slot, remoteLooksRef.current.get(slot) ?? []);
       return avatar;
     };
 
@@ -791,6 +851,9 @@ ${shader.fragmentShader}`.replace(
         const headBone = bones.get("mixamorig:Head");
         if (headBone) headBaseScale.copy(headBone.scale);
         applyHeadOcclusion();
+        // Stuck-on pieces hang off the bones, so the ragdoll carries them with no
+        // per-frame work: whatever the muscles do to a limb happens to its horns too.
+        attachmentsRef.current.forEach((attachment) => attachToSkeleton(attachment, (name) => bones.get(name)));
         const initialYaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(facing.x, facing.z));
         for (const [name, mass, radius, muscle, damping] of profiles) {
           const bone = bones.get(name);
@@ -1409,12 +1472,13 @@ ${shader.fragmentShader}`.replace(
       receivePoseRef.current = () => undefined;
       removeRemoteRef.current = () => undefined;
       keepRemotesRef.current = () => undefined;
+      applyLookRef.current = () => undefined;
       clearRemotesRef.current = () => undefined;
       Array.from(remoteAvatars.keys()).forEach(removeRemote);
       renderer.dispose();
       renderer.domElement.remove();
     };
-  }, []);
+  }, [phase]);
 
   const bindTouch = (key: string) => ({
     onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => {
@@ -1426,6 +1490,19 @@ ${shader.fragmentShader}`.replace(
   });
 
   const updateComfort = (patch: Partial<ComfortSettings>) => setComfort((current) => ({ ...current, ...patch }));
+
+  if (phase !== "play") {
+    return (
+      <CharacterCustomizer
+        initial={attachments}
+        onPlay={(chosen) => {
+          setAttachments(chosen);
+          attachmentsRef.current = chosen;
+          setPhase("play");
+        }}
+      />
+    );
+  }
 
   return (
     <main className="game-shell">
@@ -1514,6 +1591,7 @@ ${shader.fragmentShader}`.replace(
           <p><strong>R ARM</strong> HOLD RIGHT CLICK</p>
           <p><strong>VIEW</strong> PRESS V</p>
           <p><strong>RESET</strong> PRESS R</p>
+          <button className="edit-look-button" onClick={() => { leaveRoom(); setPhase("customise"); }}>EDIT LOOK</button>
         </div>
       </section>
 
